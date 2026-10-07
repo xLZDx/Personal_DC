@@ -23,13 +23,15 @@ You also need a runtime API key whose principal has Tunnels Read + Use permissio
 
 Do not commit either credential to this repository.
 
-## 3. Put the runtime key in the current PowerShell process
+## 3. First-time runtime key use
+
+For the first tunnel configuration, put the runtime key in the current PowerShell process:
 
 ```powershell
 $env:CONTROL_PLANE_API_KEY = "paste-runtime-key-here"
 ```
 
-Personal DC does not persist this value.
+Do not place the key in the repository or in a plaintext `.env` file.
 
 ## 4. Configure the local tunnel profile
 
@@ -63,11 +65,30 @@ In ChatGPT on the web:
 2. Add a custom MCP server.
 3. Choose **Tunnel** as the connection.
 4. Select the tunnel you created, or enter its `tunnel_id`.
-5. Scan/review the available tools.
-6. Create/install the plugin/app for the allowed workspace/account.
-7. In a chat, select or @mention Personal DC when a message needs local-machine access.
+5. Choose **No authentication** for the MCP server itself; Secure MCP Tunnel authenticates the tunnel runtime separately.
+6. Scan/review the available tools.
+7. Create/install the plugin/app for the allowed workspace/account.
+8. In a chat, select or @mention Personal DC when a message needs local-machine access.
 
 Availability of read/write actions depends on the ChatGPT plan/workspace and current OpenAI rollout.
+
+## 7. Store the runtime key securely and enable Windows autostart
+
+After the tunnel works interactively:
+
+```powershell
+.\scripts\save-runtime-key.ps1
+.\scripts\install-autostart.ps1
+.\scripts\status-autostart.ps1
+```
+
+`save-runtime-key.ps1` encrypts the key with Windows DPAPI using the current-user scope and writes only the encrypted blob under:
+
+```text
+%LOCALAPPDATA%\Personal_DC\secrets\runtime-key.dpapi
+```
+
+The scheduled task `Personal_DC_Tunnel` runs at user logon with limited privileges, decrypts the key only in that user's process, and starts `tunnel-client run --profile personal-dc`. It is configured to restart on failure.
 
 ## Suggested first prompts
 

@@ -15,6 +15,8 @@ Private, policy-enforced MCP gateway for connecting approved AI clients to this 
 - Audit log: JSONL with secret-looking fields redacted
 - Delete tool: intentionally not exposed
 - OpenAI Secure MCP Tunnel client: installer and runner included
+- Windows DPAPI runtime-key storage: supported
+- Windows Task Scheduler autostart: supported
 
 ## Default allowed roots
 
@@ -54,6 +56,18 @@ For local Streamable HTTP testing:
 ## Connect through OpenAI Secure MCP Tunnel
 
 See `docs/CHATGPT_SETUP.md`.
+
+## Persistent secure tunnel on Windows
+
+After the tunnel profile is configured, store the runtime key with Windows DPAPI and install logon autostart:
+
+```powershell
+.\scripts\save-runtime-key.ps1
+.\scripts\install-autostart.ps1
+.\scripts\status-autostart.ps1
+```
+
+The encrypted key is stored outside the repository under `%LOCALAPPDATA%\Personal_DC\secrets` and is decryptable only by the current Windows user. The scheduled task `Personal_DC_Tunnel` starts the tunnel automatically at logon and is configured to restart on failure.
 
 ## Security model
 

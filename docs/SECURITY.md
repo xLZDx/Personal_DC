@@ -38,6 +38,16 @@ logs\audit.jsonl
 
 Fields whose names look like credentials, tokens, secrets, API keys, or authorization values are redacted before logging.
 
+## Runtime key storage
+
+For persistent Windows operation, the runtime API key is encrypted with Windows DPAPI using the `CurrentUser` scope. The encrypted blob is stored outside the repository under `%LOCALAPPDATA%\Personal_DC\secrets`.
+
+The plaintext key is not written to Git, logs, or a plaintext `.env` file. It is decrypted only at runtime into the environment of the tunnel process because `tunnel-client` consumes the configured `env:CONTROL_PLANE_API_KEY` reference.
+
+## Autostart
+
+The scheduled task `Personal_DC_Tunnel` starts at the current user's logon with limited privileges. It is configured for a single instance, start-when-available behavior, and restart-on-failure.
+
 ## Network boundary
 
 The MCP server defaults to stdio. Its optional HTTP transport binds to `127.0.0.1`.
