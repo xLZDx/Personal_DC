@@ -1,0 +1,15 @@
+{
+  "status": "FOUNDATION_TESTED_EXECUTION_HOLD",
+  "base_commit": "d3fb644263694091e20dd2c3782747d60fe777cc",
+  "source_manifest": "SOURCE_MANIFEST.json",
+  "test_basis": "pre-commit source hashes; not hosted CI or production attestation",
+  "linux": {"python": "3.13.5", "pytest": "9.0.2", "cryptography": "46.0.4", "collected": 132, "passed": 132, "skipped": 0, "failed": 0, "exit_code": 0, "source_matches_reference": true},
+  "windows": {"python": "3.14.3", "pytest": "8.4.2", "cryptography": "43.0.3", "started_utc": "2026-10-07T23:26:18.083099+00:00", "finished_utc": "2026-10-07T23:26:23.671937+00:00", "collected": 132, "passed": 131, "skipped": 1, "failed": 0, "exit_code": 0, "source_matches_reference": true, "skip_reason": "Symlink privilege unavailable"},
+  "linux_mutations": [{"id": "R01", "detected": true, "pytest_exit_code": 1}, {"id": "R02", "detected": true, "pytest_exit_code": 1}, {"id": "R03", "detected": true, "pytest_exit_code": 1}],
+  "production_gates_G01_G13": "NOT_RUN",
+  "full_legacy_suite": "NOT_RUN",
+  "desktop_commander_connection": "NOT_AVAILABLE_IN_SESSION",
+  "local_complete_git_clone": "NOT_CREATED",
+  "active_checkout_modified": false,
+  "new_listener_started": false
+}
