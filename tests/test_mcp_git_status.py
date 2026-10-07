@@ -23,7 +23,7 @@ async def _check_git_status() -> None:
             started = time.monotonic()
             result = await session.call_tool(
                 "project_git_status",
-                {"project": "Personal_DC"},
+                {"project": str(ROOT)},
             )
             elapsed = time.monotonic() - started
             assert result.isError is not True
