@@ -1,0 +1,25 @@
+{
+  "allowed_roots": [
+    "D:\\Repo",
+    "D:\\Downloads\\gemeni videos",
+    "D:\\Temp"
+  ],
+  "protected_components": [".git", ".ssh", ".aws", ".azure", ".gnupg"],
+  "protected_names": [
+    ".env",
+    "id_rsa",
+    "id_ed25519",
+    "credentials",
+    "credentials.json",
+    "secrets.json"
+  ],
+  "allowed_executables": [
+    "git",
+    "git.exe",
+    "python",
+    "python.exe",
+    "npm",
+    "npm.cmd"
+  ],
+  "blocked_command_patterns": []
+}

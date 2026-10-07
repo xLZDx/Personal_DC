@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "personal-dc"
+version = "0.1.0"
+description = "Private policy-enforced MCP gateway for a Windows workstation"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["mcp>=1.29,<2"]
+
+[project.scripts]
+personal-dc = "personal_dc.server:main"
+personal-dc-doctor = "personal_dc.doctor:main"
+
+[tool.setuptools.packages.find]
+include = ["personal_dc*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

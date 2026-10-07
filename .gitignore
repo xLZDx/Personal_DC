@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+logs/*.jsonl
+config/local/
+config/local*.json
+*.log
+vendor/tunnel-client/*.exe
+vendor/tunnel-client/*.zip
+vendor/tunnel-client/*.json
+vendor/tunnel-client/*.txt
+vendor/tunnel-client/LICENSE
+vendor/tunnel-client/NOTICE
