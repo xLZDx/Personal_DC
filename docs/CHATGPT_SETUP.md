@@ -88,7 +88,7 @@ After the tunnel works interactively:
 %LOCALAPPDATA%\Personal_DC\secrets\runtime-key.dpapi
 ```
 
-The scheduled task `Personal_DC_Tunnel` runs at user logon with limited privileges, decrypts the key only in that user's process, and starts `tunnel-client run --profile personal-dc`. It is configured to restart on failure.
+The scheduled task `Personal_DC_Tunnel` runs at user logon with limited privileges, starts the stateless MCP backend on `127.0.0.1:18765`, decrypts the key only in the tunnel process environment, and starts `tunnel-client run --profile personal-dc` with health on `127.0.0.1:18080`. It is configured to restart on failure.
 
 ## Suggested first prompts
 

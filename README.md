@@ -6,7 +6,7 @@ Private, policy-enforced MCP gateway for connecting approved AI clients to this 
 
 - Local MCP server: implemented
 - Python MCP SDK: supported through `mcp>=1.29,<2`
-- Transport: stdio, Streamable HTTP, SSE
+- Transport: stateless Streamable HTTP for persistent tunnel operation; stdio/SSE remain available for local development
 - File access: allowlisted roots only
 - Protected file/path filtering: enabled
 - Git read operations: status, diff, log
@@ -46,12 +46,14 @@ python -m pytest -q
 .\scripts\start-stdio.ps1
 ```
 
-For local Streamable HTTP testing:
+For local stateless Streamable HTTP testing:
 
 ```powershell
 .\scripts\start-http.ps1
-# endpoint: http://127.0.0.1:8765/mcp
+# endpoint: http://127.0.0.1:18765/mcp
 ```
+
+Persistent OpenAI Secure MCP Tunnel operation uses this loopback HTTP endpoint behind the tunnel, which avoids stale stdio initialization state after Windows or tunnel restarts.
 
 ## Connect through OpenAI Secure MCP Tunnel
 

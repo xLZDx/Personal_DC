@@ -21,7 +21,9 @@ mcp = FastMCP(
         "Deletion is intentionally unavailable. Prefer read-only tools before write tools."
     ),
     host="127.0.0.1",
-    port=int(os.environ.get("PERSONAL_DC_PORT", "8765")),
+    port=int(os.environ.get("PERSONAL_DC_PORT", "18765")),
+    stateless_http=True,
+    json_response=True,
 )
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False)

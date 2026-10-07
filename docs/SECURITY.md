@@ -50,9 +50,9 @@ The scheduled task `Personal_DC_Tunnel` starts at the current user's logon with 
 
 ## Network boundary
 
-The MCP server defaults to stdio. Its optional HTTP transport binds to `127.0.0.1`.
+For persistent ChatGPT/OpenAI operation, Personal DC runs a stateless Streamable HTTP MCP endpoint on `127.0.0.1:18765`. It is loopback-only and is not exposed through the firewall or router. Local stdio/SSE modes remain available for development.
 
-For ChatGPT/OpenAI access, use Secure MCP Tunnel so that the workstation makes an outbound HTTPS connection rather than exposing a new inbound port.
+Secure MCP Tunnel connects to that loopback endpoint and makes an outbound HTTPS connection to OpenAI, so no new inbound public port is exposed.
 
 ## Operator rule
 

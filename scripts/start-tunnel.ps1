@@ -1,22 +1,10 @@
-param([string]$Profile = "personal-dc")
+param()
 
 $ErrorActionPreference = "Stop"
-$Repo = Split-Path -Parent $PSScriptRoot
-$Client = Join-Path $Repo "vendor\tunnel-client\tunnel-client.exe"
+$SecretPath = Join-Path $env:LOCALAPPDATA "Personal_DC\secrets\runtime-key.dpapi"
 
-if (-not $env:CONTROL_PLANE_API_KEY) {
-    throw "CONTROL_PLANE_API_KEY is not set in this PowerShell session."
-}
-if (-not (Test-Path $Client)) {
-    throw "tunnel-client is not installed. Run .\scripts\install-tunnel-client.ps1 first."
+if (-not (Test-Path $SecretPath)) {
+    throw "Secure runtime key is not stored yet. Run .\scripts\save-runtime-key.ps1 first."
 }
 
-Push-Location $Repo
-try {
-    & $Client doctor --profile $Profile --explain
-    if ($LASTEXITCODE -ne 0) { throw "Tunnel doctor failed." }
-    & $Client run --profile $Profile
-}
-finally {
-    Pop-Location
-}
+& (Join-Path $PSScriptRoot "start-autostart.ps1")

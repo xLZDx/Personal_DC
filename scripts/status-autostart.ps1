@@ -2,7 +2,7 @@ param()
 $ErrorActionPreference = "Stop"
 $SecretPath = Join-Path $env:LOCALAPPDATA "Personal_DC\secrets\runtime-key.dpapi"
 $TaskName = "Personal_DC_Tunnel"
-$UrlFile = Join-Path $env:USERPROFILE ".local\state\tunnel-client\health\personal-dc.url"
+$HealthBase = "http://127.0.0.1:18080"
 
 $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 $result = [ordered]@{
@@ -11,18 +11,12 @@ $result = [ordered]@{
     TaskState = if ($task) { [string]$task.State } else { "Missing" }
     Health = $false
     Ready = $false
-    HealthBase = ""
+    HealthBase = $HealthBase
 }
 
-if (Test-Path $UrlFile) {
-    $base = (Get-Content $UrlFile -Raw).Trim()
-    $result.HealthBase = $base
-    if ($base) {
-        try {
-            $result.Health = ((Invoke-WebRequest -UseBasicParsing ($base + "/healthz") -TimeoutSec 3).Content.Trim() -eq "live")
-            $result.Ready = ((Invoke-WebRequest -UseBasicParsing ($base + "/readyz") -TimeoutSec 3).Content.Trim() -eq "ready")
-        } catch {}
-    }
-}
+try {
+    $result.Health = ((Invoke-WebRequest -UseBasicParsing ($HealthBase + "/healthz") -TimeoutSec 3).Content.Trim() -eq "live")
+    $result.Ready = ((Invoke-WebRequest -UseBasicParsing ($HealthBase + "/readyz") -TimeoutSec 3).Content.Trim() -eq "ready")
+} catch {}
 
 [pscustomobject]$result | Format-List
