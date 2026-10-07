@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -15,6 +16,8 @@ def run(executable: str, args: list[str], cwd: str | Path, timeout: int = 120) -
     policy = Policy()
     safe_cwd = policy.resolve_path(cwd)
     exe, safe_args = policy.validate_command(executable, args)
+    if Path(exe).name.casefold() in {"git", "git.exe"}:
+        safe_args = ["-c", "core.fsmonitor=false", *safe_args]
     timeout = max(1, min(int(timeout), 1800))
     started = time.monotonic()
     record("command", "START", executable=exe, args=safe_args, cwd=str(safe_cwd), timeout=timeout)
@@ -22,11 +25,13 @@ def run(executable: str, args: list[str], cwd: str | Path, timeout: int = 120) -
         proc = subprocess.run(
             [exe, *safe_args],
             cwd=str(safe_cwd),
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             errors="replace",
             timeout=timeout,
             shell=False,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         result = {
             "exit_code": proc.returncode,
