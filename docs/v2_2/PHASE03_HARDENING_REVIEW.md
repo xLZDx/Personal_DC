@@ -162,3 +162,20 @@ attestation verifier, claimed PASS is rejected. A rejecting verifier also
 fails closed. This is testable integration scaffolding only: a production
 verifier must be independently enrolled and must authenticate actual evidence
 bytes and the expected reviewed Git HEAD. G01–G13 remain HOLD/PARTIAL.
+
+## Trusted synthetic snapshot ingestion — 2026-10-08
+
+`dc_v2/phase03_import.py` adds an owner-configured file registry import
+that checks resource IDs, portable relative paths, expected SHA-256, recipient
+and classification before creating a disposable workspace. Only PUBLIC or
+MODEL_EXPORT_ALLOWED entries for the specifically authorized recipient are
+imported. The entire import fails closed for mismatches; source files are
+read with descriptor-level metadata comparison and 2 MB per-file / 10 MB total
+quotas. Negative tests cover sensitive classification, wrong recipient,
+source mutation, protected paths, duplicates and symlink denial. The
+repository's active main/tunnel are not used as source roots.
+
+This is **not** production-proof Windows file-handle containment or a signed
+source-snapshot enrollment service. Concurrent hostile rename/reparse attacks,
+real-data classification authority, external approvals, cross-process locking
+and G04 production acceptance remain OPEN.
