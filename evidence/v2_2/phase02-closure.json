@@ -1,0 +1,223 @@
+{
+  "schema": "personal-dc.phase02.evidence.v1",
+  "verified_utc": "2026-10-08T07:14:11.517674+00:00",
+  "branch": "feature/developer-gateway-v2-2",
+  "foundation_base": "daf5968a99bf1c237815bb0ce18a50838253267b",
+  "tested_code_commit": "a5c2d02a0b4ed49b43d6468abd4476f2c194f15e",
+  "exact_head_witness": {
+    "started_utc": "2026-10-08T07:13:30.924565+00:00",
+    "status": "EXACT_HEAD_TESTED",
+    "expected_code_commit": "a5c2d02a0b4ed49b43d6468abd4476f2c194f15e",
+    "before_head": "a5c2d02a0b4ed49b43d6468abd4476f2c194f15e",
+    "validation_exit_code": 0,
+    "after_head": "a5c2d02a0b4ed49b43d6468abd4476f2c194f15e",
+    "tracked_tree_clean": true,
+    "test_results": [
+      {
+        "suite": "foundation",
+        "started_utc": "2026-10-08T07:13:32.954266+00:00",
+        "duration_s": 4.669,
+        "exit_code": 0,
+        "collected": 132,
+        "passed": 131,
+        "failed": 0,
+        "skipped": 1
+      },
+      {
+        "suite": "phase02",
+        "started_utc": "2026-10-08T07:13:37.624085+00:00",
+        "duration_s": 13.578,
+        "exit_code": 0,
+        "collected": 129,
+        "passed": 129,
+        "failed": 0,
+        "skipped": 0
+      },
+      {
+        "suite": "legacy-and-discovery",
+        "started_utc": "2026-10-08T07:13:51.202845+00:00",
+        "duration_s": 19.592,
+        "exit_code": 0,
+        "collected": 269,
+        "passed": 268,
+        "failed": 0,
+        "skipped": 1
+      }
+    ],
+    "finished_utc": "2026-10-08T07:14:11.517674+00:00"
+  },
+  "windows": {
+    "finished_utc": "2026-10-08T07:14:10.827297+00:00",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.14.3",
+    "packages": {
+      "mcp": "1.29.0",
+      "httpx": "0.28.1",
+      "uvicorn": "0.47.0",
+      "pytest": "8.4.2",
+      "cryptography": "43.0.3"
+    },
+    "results": [
+      {
+        "suite": "foundation",
+        "started_utc": "2026-10-08T07:13:32.954266+00:00",
+        "duration_s": 4.669,
+        "exit_code": 0,
+        "collected": 132,
+        "passed": 131,
+        "failed": 0,
+        "skipped": 1
+      },
+      {
+        "suite": "phase02",
+        "started_utc": "2026-10-08T07:13:37.624085+00:00",
+        "duration_s": 13.578,
+        "exit_code": 0,
+        "collected": 129,
+        "passed": 129,
+        "failed": 0,
+        "skipped": 0
+      },
+      {
+        "suite": "legacy-and-discovery",
+        "started_utc": "2026-10-08T07:13:51.202845+00:00",
+        "duration_s": 19.592,
+        "exit_code": 0,
+        "collected": 269,
+        "passed": 268,
+        "failed": 0,
+        "skipped": 1
+      }
+    ],
+    "source_sha256_lf_normalized": {
+      "dc_v2/__init__.py": "d9652311a377e019a6f7c3267c94aff250222996c4363db33b7bdb274bdb8dce",
+      "dc_v2/contracts.py": "981f0231c9500c99eb5a9b6def7d72d6cbc14c213e64ed1240db1b73d5599ca9",
+      "dc_v2/gateway.py": "7dd8408d6fa0c15222893f46fe0501d3653679260d0ea2f9f816d697ed1b7b23",
+      "dc_v2/ledger.py": "385db179ee788c4a731674e0defdeaa87d9f8e289acd23a9faee8380c05f97f8",
+      "dc_v2/output.py": "2ac6a0b7f4610291bbf981f3490861d1e01428d3806f27744060266cb501a179",
+      "dc_v2/policy.py": "5545870f7c69e9dd06803c0436e3f4a688b0d5909b44e66f1ef3c71fd7e7ca5c",
+      "dc_v2/readonly_audit.py": "b77e7d88b9ce5deabea6a557ed34218b9005fa459e264919e30a009cbf6eb6a7",
+      "dc_v2/readonly_auth.py": "cd550720093bf78b4f2df71e068bec14c1689137daff46115af6832f0e481b93",
+      "dc_v2/readonly_mcp.py": "19fe32189123cda2c556e335fc62eb483ed1e3f27152fcfebb6525e2a4b37219",
+      "dc_v2/readonly_service.py": "cc8af05f6ac764eed39a9680a0933d96327301209c87e6741316f58ff978d574",
+      "dc_v2/readonly_snapshot.py": "59a481942ee7a3cde10c682ebafe89e0e7e3902a0889d23728512a027e7221a4",
+      "tests_phase02/__init__.py": "d4524359fb4381f1158e9956e3e19df51e9732c3b826f1a9d4893e4c0eee65bf",
+      "tests_phase02/test_boundaries.py": "6c59e3469d7708663d64173d016b66613a9bc53e741761d1e59e568e414282b0",
+      "tests_phase02/test_live_mcp.py": "50d70ef9566800fe025df3753f85c7b5185a12935ec533f22143ca847cb5b1fb",
+      "tests_phase02/test_readonly.py": "d1f43d080ca8d980b65691bc22323da5f908cb318e5d8bca7aa49a9fb65dd5b6",
+      "tests_phase02/test_review_regressions.py": "e80a8bbd73b38a5662a0df75d540101d7426f05c982dae1c1bd78a804e9cc3cb",
+      "tests_v2/__init__.py": "7b4b14dce8b044d354c3b8adf1a3cfc972a2220407c8b9ac9fe3045691ff8ad9",
+      "tests_v2/conftest.py": "b00ba932ebf306d4f538e9b7479fabe3de9b76e1480f69e09e98dea35caf89ba",
+      "tests_v2/test_security.py": "6f81f47612752efadee7c086d65bfe53dc7dab2402d5e148bd832ddd06b878ea",
+      "scripts_v2/mutation_check.py": "6f97c4cec5a316f5fe83ef1d17c57e0610dc1a1f93d007e2d7259381b50c9633",
+      "scripts_v2/mutation_phase02.py": "bc836e37ba69254649d0f58340c04976e9f01063c8f70260fabc66543eba4447",
+      "scripts_v2/run_phase02_validation.py": "2b722a123f71da4265db673623d086399edc00ede2c4dedb01d546a09a06879d"
+    },
+    "execution": "HOLD",
+    "production_activation": "NOT_PERFORMED",
+    "all_command_exit_codes_zero": true
+  },
+  "windows_phase02_mutations": {
+    "mutations": [
+      {
+        "id": "P02-M01",
+        "pytest_exit_code": 1,
+        "collected": 5,
+        "assertion_failures": 1,
+        "errors": 0,
+        "detected": true
+      },
+      {
+        "id": "P02-M02",
+        "pytest_exit_code": 1,
+        "collected": 12,
+        "assertion_failures": 1,
+        "errors": 0,
+        "detected": true
+      },
+      {
+        "id": "P02-M03",
+        "pytest_exit_code": 1,
+        "collected": 4,
+        "assertion_failures": 4,
+        "errors": 0,
+        "detected": true
+      },
+      {
+        "id": "P02-M04",
+        "pytest_exit_code": 1,
+        "collected": 3,
+        "assertion_failures": 1,
+        "errors": 0,
+        "detected": true
+      },
+      {
+        "id": "P02-M05",
+        "pytest_exit_code": 1,
+        "collected": 1,
+        "assertion_failures": 1,
+        "errors": 0,
+        "detected": true
+      },
+      {
+        "id": "P02-M06",
+        "pytest_exit_code": 1,
+        "collected": 1,
+        "assertion_failures": 1,
+        "errors": 0,
+        "detected": true
+      },
+      {
+        "id": "P02-M07",
+        "pytest_exit_code": 1,
+        "collected": 10,
+        "assertion_failures": 4,
+        "errors": 0,
+        "detected": true
+      }
+    ],
+    "original_sources_unchanged": true,
+    "all_detected": true,
+    "scope": "synthetic local source mutations; not OS sandbox acceptance"
+  },
+  "windows_foundation_mutations": [
+    {
+      "id": "R01",
+      "mutation_detected": true,
+      "pytest_exit_code": 1
+    },
+    {
+      "id": "R02",
+      "mutation_detected": true,
+      "pytest_exit_code": 1
+    },
+    {
+      "id": "R03",
+      "mutation_detected": true,
+      "pytest_exit_code": 1
+    }
+  ],
+  "implementation": "COMPLETE_FOR_LOOPBACK_READONLY_DEV_PROFILE",
+  "phase02_deployed_acceptance": "PARTIAL_HOLD",
+  "phase03_execution": "HOLD",
+  "production_activation": "NOT_PERFORMED",
+  "hosted_ci": "NOT_RUN",
+  "deployment_blockers": [
+    "P02-DEPLOY-01",
+    "P02-DEPLOY-02",
+    "P02-DEPLOY-03",
+    "P02-DEPLOY-04",
+    "P02-DEPLOY-05"
+  ],
+  "limitations": [
+    "Original symlink-privilege test skipped on Windows; OS reparse isolation remains unverified.",
+    "Local opaque bearer profile is not production OAuth/tunnel acceptance.",
+    "Local audit is not an independently protected remote audit service.",
+    "Snapshot tool metadata is not real CLI execution or Commander parity."
+  ],
+  "junit_sha256": {
+    "foundation.xml": "a095bc8717a631c1644a9d5f55c42be8c5e39aafa02d81d2684409dfcb18a6b1",
+    "legacy-and-discovery.xml": "cd1ebdf84b5faba9e8cbf96d18deb3ca1cc960e47a7349029c94ce55a965983e",
+    "phase02.xml": "295d23f1838dda7b8fc40055ee0e761fb8c08dc580b51829ad44addc1196ec06"
+  }
+}
