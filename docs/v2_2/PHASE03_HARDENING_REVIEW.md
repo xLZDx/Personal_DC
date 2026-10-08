@@ -132,3 +132,13 @@ Additional additive, not model-facing modules:
 - `MANUAL_ACCEPTANCE_CHECKLIST.md`: explicit operator review criteria for G01–G13.
 
 These components are local prototypes behind the trusted broker boundary, not production-ready services or public MCP routes. TECH-02/04/05/07/09 are PARTIAL, and G01–G13 system status remains unchanged pending independent service identity, approval enrollment, audit anchoring, Windows ACL, end-to-end gates, and deployment review.
+
+## Output snapshot pre-existing-file refusal
+
+The snapshot sealing prototype now refuses to overwrite a pre-existing,
+partially written or suspicious snapshot path. A new negative test confirms
+that the existing file stays intact and no missing metadata is synthesized.
+This remains a best-effort application-level precheck; concurrent trusted
+processes and Windows filesystem races still require a separately protected
+service, cross-process synchronization and handle-based write semantics.
+Production TECH-03/05/06 and G01/G08 remain PARTIAL or HOLD.

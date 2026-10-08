@@ -78,3 +78,14 @@ def test_output_seal_rejects_excessive_data(harness):
     data, meta = store._paths(task_id)
     assert not data.exists()
     assert not meta.exists()
+
+def test_preexisting_partial_snapshot_refuses_seal(harness):
+    runner, principal, task_id, store = make(harness)
+    original = runner._docker
+    runner._docker = lambda *a, **k: '{"Running":false,"ExitCode":0}' if a[0]=="inspect" else original(*a, **k)
+    payload, meta = store._paths(task_id)
+    payload.write_bytes(b"externally-planted")
+    with pytest.raises(Denied, match="OUTPUT_INTEGRITY_ERROR"):
+        store.seal(task_id, principal)
+    assert payload.read_bytes() == b"externally-planted"
+    assert not meta.exists()

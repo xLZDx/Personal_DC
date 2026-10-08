@@ -101,6 +101,11 @@ class OutputSnapshots:
                 "size": len(payload), "sha256": _sha(payload),
                 "redactions": redactor.redactor.redactions, "version": 1}
         payload_path, meta_path = self._paths(task_id)
+        # A half-written or externally planted pair is not a fresh snapshot.
+        # Refuse to replace any existing artifact on first seal.
+        require(not payload_path.exists() and not meta_path.exists() and
+                not payload_path.is_symlink() and not meta_path.is_symlink(),
+                "OUTPUT_INTEGRITY_ERROR")
         self.runner.audit.append("OUTPUT_SNAPSHOT_SEAL", principal.binding, task_id)
         suffix = ".stage-" + secrets.token_hex(8)
         for destination, content in (
