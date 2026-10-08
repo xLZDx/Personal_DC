@@ -142,3 +142,14 @@ This remains a best-effort application-level precheck; concurrent trusted
 processes and Windows filesystem races still require a separately protected
 service, cross-process synchronization and handle-based write semantics.
 Production TECH-03/05/06 and G01/G08 remain PARTIAL or HOLD.
+
+## Release gate evaluator
+
+The new `dc_v2/release_gate.py` requires all G01–G13 to be represented.
+Any claimed PASS must be bound to the exact reviewed Git HEAD and to
+independent system-test evidence with a SHA-256 digest. Missing and mismatched
+evidence fails closed. Even a full asserted PASS returns only
+`REVIEW_ELIGIBLE`, never automatic activation. This is validation of
+evidence metadata, not verification that a claimed evidence payload is
+genuine or that deployment is actually secure. Protected evidence collection,
+independent reviewers and full system acceptance remain required.
