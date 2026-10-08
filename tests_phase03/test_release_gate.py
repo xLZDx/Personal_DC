@@ -50,7 +50,16 @@ def test_full_evidence_only_allows_review_not_activation():
     gates = {g: {"status": "PASS", "evidence": {
         "head": HEAD, "sha256": "f" * 64, "independent": True,
         "system_test": True}} for g in GATES}
-    result = assess_release(HEAD, gates)
+    with pytest.raises(Denied, match="TRUSTED_ATTESTOR_UNAVAILABLE"):
+        assess_release(HEAD, gates)
+    result = assess_release(HEAD, gates, verifier=lambda gate, head, evidence: True)
     assert result["release_decision"] == "REVIEW_ELIGIBLE"
     assert result["automatic_activation"] is False
     assert result["operator_cutover_required"] is True
+
+def test_independent_attestor_can_reject_an_apparently_complete_gate():
+    gates = {g: {"status": "PASS", "evidence": {
+        "head": HEAD, "sha256": "f" * 64,
+        "independent": True, "system_test": True}} for g in GATES}
+    with pytest.raises(Denied, match="GATE_ATTESTATION_INVALID"):
+        assess_release(HEAD, gates, verifier=lambda gate, head, ev: False)

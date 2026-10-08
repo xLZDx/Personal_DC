@@ -153,3 +153,12 @@ evidence fails closed. Even a full asserted PASS returns only
 evidence metadata, not verification that a claimed evidence payload is
 genuine or that deployment is actually secure. Protected evidence collection,
 independent reviewers and full system acceptance remain required.
+
+## Trusted attestor check tightened
+
+A self-declared `independent=true` field and a syntactically valid evidence
+hash no longer suffice for a PASS. Without a separately injected trusted
+attestation verifier, claimed PASS is rejected. A rejecting verifier also
+fails closed. This is testable integration scaffolding only: a production
+verifier must be independently enrolled and must authenticate actual evidence
+bytes and the expected reviewed Git HEAD. G01–G13 remain HOLD/PARTIAL.

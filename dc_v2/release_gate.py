@@ -6,7 +6,7 @@ only after independent system evidence bound to the exact reviewed git HEAD.
 from __future__ import annotations
 
 import re
-from typing import Mapping
+from typing import Mapping, Callable
 
 from .contracts import Denied, require
 
@@ -15,7 +15,8 @@ SHA = re.compile(r"[0-9a-f]{40}\Z")
 EVIDENCE_SHA = re.compile(r"[0-9a-f]{64}\Z")
 
 
-def assess_release(head: str, gates: Mapping[str, dict]) -> dict:
+def assess_release(head: str, gates: Mapping[str, dict], *,
+                   verifier: Callable[[str, str, dict], bool] | None = None) -> dict:
     require(type(head) is str and SHA.fullmatch(head) is not None,
             "INVALID_REQUEST")
     require(type(gates) is dict and set(gates) == set(GATES), "GATE_INCOMPLETE")
@@ -34,6 +35,14 @@ def assess_release(head: str, gates: Mapping[str, dict]) -> dict:
                     and evidence.get("independent") is True
                     and evidence.get("system_test") is True,
                     "GATE_EVIDENCE_MISSING")
+            # Self-declared "independent" flags and SHA strings are NOT proof.
+            # Without a separately trusted verifier nothing may claim PASS.
+            require(verifier is not None, "TRUSTED_ATTESTOR_UNAVAILABLE")
+            try:
+                authenticated = verifier(gate, head, evidence)
+            except Exception:
+                authenticated = False
+            require(authenticated is True, "GATE_ATTESTATION_INVALID")
         status[gate] = state
     ready = all(x == "PASS" for x in status.values())
     return {"head": head, "gate_status": status, "all_pass": ready,
