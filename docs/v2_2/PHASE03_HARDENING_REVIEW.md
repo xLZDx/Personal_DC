@@ -105,3 +105,30 @@ orphan-controller or guarantee all workers have terminated.
 - These are in-process safeguards, **not** race-free Windows handle or ACL
   enforcement against an untrusted process concurrently mutating workspaces.
   G02/G06 remain PARTIAL, and deployment remains HOLD.
+
+## Orphan inventory — independent read-only foundation
+
+The new `dc_v2/phase03_inventory.py` performs a bounded read-only comparison
+of broker-owned task IDs and Docker containers carrying the exact
+`personal-dc.owner=phase03` label. Every returned name must match the
+`pdc22-` random ID format; malformed, ambiguous, duplicate or corrupted
+results fail closed. Audit integrity is verified before Docker inspection.
+A report flags missing registered containers and unregistered labeled
+containers for trusted operator review.
+
+This is **not** a deployable kill controller: it has no daemon authority
+hardening, independent service identity, periodic monitoring, STOP enforcement,
+or automatic termination. TECH-04 is still PARTIAL and G07 is not PASS.
+The unit negative-test suite is `tests_phase03/test_inventory.py` (7 tests).
+
+## Autonomous continuation — broker candidates, 2026-10-08
+
+Additional additive, not model-facing modules:
+- `phase03_inventory.py`: read-only reconciliation of registered tasks and labeled Docker containers; unexpected IDs and audit corruption fail closed.
+- `phase03_container_policy.py`: HostConfig/image/mount validation. Real Docker inspect smoke was PASS for a disposable guest, but Docker is NOT VM-equivalent.
+- `phase03_supervisor.py`: stop-latch one-shot reconciliation for registered/policy-matching containers only. Not installed as independent Windows service; unknown resources never stopped.
+- `approved_execution.py`: transactional single-use signed Ledger approval before Docker side effect; replay cannot start another process, uncertain failed attempt is not retried.
+- `phase03_output_store.py`: redacted, hash-checked immutable synthetic task-output snapshots with stable cursors and grant-limited export. Not cross-process transactional and depends on trusted ACLs.
+- `MANUAL_ACCEPTANCE_CHECKLIST.md`: explicit operator review criteria for G01–G13.
+
+These components are local prototypes behind the trusted broker boundary, not production-ready services or public MCP routes. TECH-02/04/05/07/09 are PARTIAL, and G01–G13 system status remains unchanged pending independent service identity, approval enrollment, audit anchoring, Windows ACL, end-to-end gates, and deployment review.

@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dc_v2.contracts import Denied, Manifest, Principal
 from dc_v2.execution import DockerExecutor, WorkspacePool
 from dc_v2.policy import TaskGrant
+from dc_v2.phase03_container_policy import check_container_policy
 
 BASE = Path(r"D:\Temp\Personal_DC_v2_2_isolated")
 DOCKER = Path(r"C:\Program Files\Docker\Docker\resources\bin\docker.exe")
@@ -60,6 +61,13 @@ try:
     launched = runner.start(manifest, grant, principal, ws.workspace_id)
     task_id = launched["task_id"]
     created.append(task_id)
+    inspected = json.loads(runner._docker("inspect", runner.tasks[task_id].container))
+    verified = check_container_policy(
+        inspected[0], expected_image=IMAGE, expected_workspace=str(ws.path))
+    note("actual-container-hostconfig",
+         verified["container_policy_match"] and
+         not verified["security_boundary_certified"],
+         {"profile": verified["profile"], "certified": False})
     deadline = time.monotonic() + 35
     while time.monotonic() < deadline:
         state = runner.status(task_id, principal)

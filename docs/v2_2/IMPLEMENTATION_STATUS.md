@@ -61,3 +61,21 @@ Phase 03 focused: **52 passed, 1 skipped**. Tests cover negative import
 and quota cases; production system acceptance remains HOLD. Current
 console evidence was captured under
 `D:\Temp\Personal_DC_v2_2_isolated\evidence\phase03-full-20261008-v3.txt`.
+
+## Latest autonomous source continuation — 2026-10-08
+
+New additive local candidates:
+- `dc_v2/phase03_inventory.py`: bounded read-only reconciliation of registered tasks and labeled Docker worker containers. Unknown containers are never stopped or deleted.
+- `dc_v2/phase03_container_policy.py`: inspect-time Docker identity, image, privilege, network, mount and resource checks. Real disposable Docker HostConfig check returned PASS; does not certify Windows/VM isolation.
+- `dc_v2/phase03_supervisor.py`: single-run STOP reconciliation, policy-checking each registered Docker task, fail-closed for unknown/unverified tasks. NOT installed as an independently privileged service.
+- `dc_v2/approved_execution.py`: signed one-time Ledger reservation prior to starting a Docker job. Replay is rejected or returned as already reserved, not rerun. Direct underlying runner remains callable inside trusted Python; no protected IPC boundary exists.
+- `dc_v2/phase03_output_store.py`: redacted, bounded, integrity-checked output snapshot prototype with stable paging. Multi-process races, Windows ACL, atomic two-file persistence and external audit remain outstanding.
+- `docs/v2_2/MANUAL_ACCEPTANCE_CHECKLIST.md`: explicit acceptance checks for all 13 gates, not evidence of passing them.
+
+Tests were added for all components, including denial on tampering, ambiguous Docker inventory, hostile HostConfig, replay, output quota and cross-principal reads. The first full Windows regression had **623 passed, 3 skipped, 1 failed**, where the one failure was an old 5-second MCP stdio latency assertion at 6.02 seconds. That test passed on isolated retry. A clean full regression and exact-head CI are required before declaring green. Production gate status remains HOLD/PARTIAL, with no G01–G13 system PASS.
+
+The operator can approve design choices, but source code alone does NOT safely deliver the privileged independent broker, approval agent, audited OS configuration or cutover. Do not interpret this as production-ready.
+
+## Repeat full regression result
+
+Repeated full Windows suite on 2026-10-08: **624 passed, 3 skipped, 0 failed**, exit 0. The earlier legacy stdio latency threshold failure (6.02 s vs 5 s) passed in a separately executed retry, then the full suite passed unchanged. Evidence remains in the isolated diagnostics directory `D:\Temp\Personal_DC_v2_2_isolated\evidence\phase03-full-repeat.txt`. These are local source-tree tests, not production G01–G13 approval.
