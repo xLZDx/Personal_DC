@@ -102,12 +102,19 @@ def test_unverified_status_never_claims_success(harness, cause):
         assert not any(a[0] == "stop" for a in called)
 
 
-def test_untrusted_audit_prevents_supervisor_action(harness):
-    runner = harness[2]
+def test_corrupt_audit_does_not_block_emergency_stop(harness):
+    _, ws, runner, principal, manifest, grant = harness
+    task_id = runner.start(manifest, grant, principal, ws.workspace_id)["task_id"]
     runner.stop_file.write_text("STOP operator\n")
+    owned = runner.tasks[task_id].container
+    called = bind_daemon(runner, [owned])
     runner.audit.path.write_bytes(b"bad audit\n")
-    with pytest.raises(Denied, match="AUDIT_INTEGRITY_ERROR"):
-        reconcile_stop_latch(runner)
+    result = reconcile_stop_latch(runner)
+    assert result["audit_verified"] is False
+    assert result["stopped"] == [task_id]
+    assert result["production_verified"] is False
+    assert [x[0] for x in called].count("stop") == 1
+    assert runner.audit.path.read_bytes() == b"bad audit\n"
 
 def test_stop_ack_without_running_false_is_unverified(harness):
     _, ws, runner, principal, manifest, grant = harness

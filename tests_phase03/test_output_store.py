@@ -89,3 +89,66 @@ def test_preexisting_partial_snapshot_refuses_seal(harness):
         store.seal(task_id, principal)
     assert payload.read_bytes() == b"externally-planted"
     assert not meta.exists()
+
+
+def test_output_utf8_cursor_is_lossless(harness):
+    runner, principal, task_id, store = make(harness)
+    original = runner._docker
+    sample = "é🙂終 ABC"
+    def fake(*args, **kwargs):
+        if args[0] == "inspect":
+            return '{"Running":false,"ExitCode":0}'
+        if args[0] == "logs":
+            return sample
+        return original(*args, **kwargs)
+    runner._docker = fake
+    store.seal(task_id, principal)
+    cursor = 0
+    output = []
+    for _ in range(200):
+        page = store.read(task_id, principal, cursor, 4)
+        output.append(page["data"])
+        assert page["cursor"] > cursor
+        cursor = page["cursor"]
+        if not page["has_more"]:
+            break
+    else:
+        pytest.fail("pagination did not finish")
+    assert "".join(output) == sample
+    with pytest.raises(Denied, match="OUTPUT_INTEGRITY_ERROR"):
+        store.read(task_id, principal, 1, 4)
+
+
+def test_output_page_too_small_for_utf8(harness):
+    runner, principal, task_id, store = make(harness)
+    original = runner._docker
+    runner._docker = lambda *a, **k: ('{"Running":false,"ExitCode":0}' if a[0]=="inspect"
+                                       else "🙂" if a[0]=="logs" else original(*a, **k))
+    store.seal(task_id, principal)
+    with pytest.raises(Denied, match="PAGE_LIMIT_TOO_SMALL"):
+        store.read(task_id, principal, 0, 1)
+
+
+def test_output_seal_never_replaces_concurrent_artifact(harness, monkeypatch):
+    from pathlib import Path
+    runner, principal, task_id, store = make(harness)
+    original = runner._docker
+    runner._docker = lambda *a, **k: ('{"Running":false,"ExitCode":0}' if a[0]=="inspect"
+                                       else original(*a, **k))
+    payload_path, meta_path = store._paths(task_id)
+    real_open = Path.open
+    planted = b"CONCURRENT-EXISTING-METADATA"
+    armed = [True]
+    def inject(self, mode="r", *args, **kwargs):
+        if self == meta_path and mode == "xb" and armed[0]:
+            armed[0] = False
+            with real_open(self, "xb") as f:
+                f.write(planted)
+        return real_open(self, mode, *args, **kwargs)
+    monkeypatch.setattr(Path, "open", inject)
+    with pytest.raises(Denied, match="OUTPUT_INTEGRITY_ERROR"):
+        store.seal(task_id, principal)
+    assert meta_path.read_bytes() == planted
+    assert payload_path.exists()
+    with pytest.raises(Denied, match="OUTPUT_INTEGRITY_ERROR"):
+        store.read(task_id, principal)

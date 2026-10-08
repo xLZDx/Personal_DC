@@ -20,13 +20,17 @@ def inspect_owned_workers(
     runner: DockerExecutor,
     *,
     docker_call: Callable[..., str] | None = None,
+    enforce_audit: bool = True,
 ) -> dict:
     """Reconcile persisted tasks and labeled containers without modifying them.
 
     A missing or malformed daemon response fails closed; no cleanup is implied.
     All returned worker IDs are opaque. Requires a working trusted local broker.
     """
-    runner.audit.verify()
+    # Normal inventory requires intact audit. The trusted emergency STOP
+    # reconciler may explicitly bypass it to prevent audit outage blocking STOP.
+    if enforce_audit:
+        runner.audit.verify()
     call = docker_call if docker_call is not None else runner._docker
     raw = call(
         "ps", "--all", "--filter", "label=personal-dc.owner=phase03",

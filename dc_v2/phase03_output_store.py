@@ -107,17 +107,21 @@ class OutputSnapshots:
                 not payload_path.is_symlink() and not meta_path.is_symlink(),
                 "OUTPUT_INTEGRITY_ERROR")
         self.runner.audit.append("OUTPUT_SNAPSHOT_SEAL", principal.binding, task_id)
-        suffix = ".stage-" + secrets.token_hex(8)
+        # Exclusive creation is essential: os.replace would overwrite an
+        # artifact planted by a concurrent caller after the preflight check.
+        # An interrupted pair is deliberately left incomplete and denied on
+        # every subsequent read/seal, until a separately authorized recovery.
         for destination, content in (
             (payload_path, payload),
             (meta_path, json.dumps(meta, sort_keys=True, separators=(",", ":")).encode()),
         ):
-            stage = destination.with_name(destination.name + suffix)
-            with stage.open("xb") as stream:
-                stream.write(content)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(stage, destination)
+            try:
+                with destination.open("xb") as stream:
+                    stream.write(content)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            except OSError:
+                raise Denied("OUTPUT_INTEGRITY_ERROR") from None
         self.runner.audit.append("OUTPUT_SNAPSHOT_SEALED", principal.binding, task_id)
         return {"task_id": task_id, "sha256": meta["sha256"],
                 "size": len(payload), "already_sealed": False,
@@ -133,10 +137,25 @@ class OutputSnapshots:
         require(existing is not None, "OUTPUT_NOT_SEALED")
         content, meta = existing
         require(cursor <= len(content), "INVALID_CURSOR")
+        # Cursor denotes a UTF-8 byte boundary. Do not corrupt multi-byte
+        # characters by splitting them between pages.
+        try:
+            content[:cursor].decode("utf-8", "strict")
+            content.decode("utf-8", "strict")
+        except UnicodeDecodeError:
+            raise Denied("OUTPUT_INTEGRITY_ERROR") from None
         next_cursor = min(len(content), cursor + limit)
+        if next_cursor < len(content):
+            while next_cursor > cursor:
+                try:
+                    content[cursor:next_cursor].decode("utf-8", "strict")
+                    break
+                except UnicodeDecodeError:
+                    next_cursor -= 1
+            require(next_cursor > cursor, "PAGE_LIMIT_TOO_SMALL")
         self.runner.audit.append("OUTPUT_SNAPSHOT_READ", principal.binding, task_id)
         return {"task_id": task_id, "cursor": next_cursor,
-                "data": content[cursor:next_cursor].decode("utf-8", "replace"),
+                "data": content[cursor:next_cursor].decode("utf-8", "strict"),
                 "has_more": next_cursor < len(content),
                 "sha256": meta["sha256"], "trust": "UNTRUSTED",
                 "redactions": meta["redactions"]}
