@@ -65,3 +65,14 @@ authorization. Any release or production switch needs a new gate decision.
   pinned guest probes passed. Exact-head remote CI remains to verify after push.
 - Do not interpret these local tests as approval for service installation,
   tunnel routing, real credentials, data exports or protected promotion.
+
+## Additional independent hardening (2026-10-08)
+
+- TECH-12 PARTIAL: fail-closed path alias and file/parent conflicts at
+  synthetic import, explicit nested protected-path tests, versioned snapshot
+  digests for 129–200 imported files, and 10 MB / 200-file broker-write
+  quota rechecks. This is not Windows file-handle-level race protection.
+- TECH-03 still OPEN: concurrent hostile Windows reparse/rename, write-races
+  and guest-mutated paths are not safely solved by these checks.
+- All protected Windows service installation, external identity/approval,
+  tunnel cutover, deletion and main merge remain operator-controlled.

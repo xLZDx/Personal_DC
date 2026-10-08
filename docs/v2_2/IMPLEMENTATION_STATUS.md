@@ -45,3 +45,19 @@ Full Windows regression: **575 passed, 3 skipped, exit 0**.
 Live Docker and offline toolchains probes: **PASS, exit 0** (synthetic only).
 Raw evidence is under evidence/phase03; in-process ten-perspective review is
 in PHASE03_HARDENING_REVIEW.md. Production deployment remains HOLD.
+
+## Autonomous import/quota continuation (2026-10-08)
+
+Synthetic Windows workspace imports now reject casefold-equivalent names,
+conflicting file and parent-directory paths, and protected nested paths
+before creating a workspace. Imports of up to 200 files use a versioned
+canonical list snapshot after the legacy 128-key digest boundary. Broker
+writes recalculate the current file/byte totals and enforce 200 files /
+10 MB, as well as the existing per-file limit. This does not make
+Windows path accesses race-free or replace a protected OS broker.
+
+Latest independent full Windows regression: **580 passed, 3 skipped**.
+Phase 03 focused: **52 passed, 1 skipped**. Tests cover negative import
+and quota cases; production system acceptance remains HOLD. Current
+console evidence was captured under
+`D:\Temp\Personal_DC_v2_2_isolated\evidence\phase03-full-20261008-v3.txt`.

@@ -64,11 +64,19 @@ class WorkspacePool:
     def create(self, contents: Mapping[str, bytes]) -> Workspace:
         require(type(contents) is dict and len(contents) <= 200, "INVALID_REQUEST")
         total = 0
+        folded = set()
         for key, data in contents.items():
             relative_name(key)
+            normalized = key.casefold()
+            require(normalized not in folded, "INVALID_REQUEST")
+            folded.add(normalized)
             require(type(data) is bytes and len(data) <= 2_000_000, "INVALID_REQUEST")
             total += len(data)
         require(total <= 10_000_000, "QUOTA_EXCEEDED")
+        for key in folded:
+            parents = key.split("/")
+            require(not any("/".join(parents[:index]) in folded
+                            for index in range(1, len(parents))), "INVALID_REQUEST")
         wid = "ws-" + secrets.token_hex(12)
         target = self.root / wid
         target.mkdir(mode=0o700)
@@ -78,8 +86,14 @@ class WorkspacePool:
                 location.parent.mkdir(parents=True, exist_ok=True)
                 with location.open("xb") as handle:
                     handle.write(data)
-            record = Workspace(wid, target, dict(contents), digest(
-                {k: hashlib.sha256(v).hexdigest() for k, v in sorted(contents.items())}))
+            entries = {k: hashlib.sha256(v).hexdigest()
+                       for k, v in sorted(contents.items())}
+            # canonical() caps dictionaries at 128 keys. Keep the historical
+            # digest for small workspaces, and use a versioned list for larger
+            # supported imports (up to 200 paths).
+            snapshot = digest(entries if len(entries) <= 128 else
+                              {"version": 2, "entries": [[k, v] for k, v in entries.items()]})
+            record = Workspace(wid, target, dict(contents), snapshot)
             self.items[wid] = record
             return record
         except Exception:
@@ -108,6 +122,23 @@ class WorkspacePool:
                     "INVALID_REQUEST")
             before = path.read_bytes() if path.exists() else b""
             require(hashlib.sha256(before).hexdigest() == expected_sha256, "MANIFEST_CHANGED")
+        # Enforce the pool budget again after import. The guest may create
+        # files, so account for the current tree before each broker write.
+        total = 0
+        file_count = 0
+        for existing in work.path.rglob("*"):
+            if existing.is_symlink():
+                raise Denied("ACCESS_DENIED")
+            if existing.is_file():
+                current_key = existing.relative_to(work.path).as_posix()
+                _safe_path(work.path, current_key)
+                size = existing.stat().st_size
+                require(size <= 2_000_000, "QUOTA_EXCEEDED")
+                total += size
+                file_count += 1
+        previous = path.stat().st_size if path.is_file() else 0
+        require(total - previous + len(contents) <= 10_000_000 and
+                file_count + (not path.exists()) <= 200, "QUOTA_EXCEEDED")
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
             require(path.is_file(), "ACCESS_DENIED")

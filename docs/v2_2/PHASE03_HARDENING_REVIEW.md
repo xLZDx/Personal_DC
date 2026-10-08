@@ -90,3 +90,18 @@ surfaces as `ENVIRONMENT_UNAVAILABLE`. Emergency STOP latches regardless of
 individual Docker stop failures and records affected tasks as
 `STOP_UNVERIFIED`. This does not replace an independent privileged
 orphan-controller or guarantee all workers have terminated.
+
+## Import and workspace quota hardening — next isolated continuation
+
+- A case-insensitive Windows path alias (for example Foo.py/foo.py) now
+  rejects the whole synthetic snapshot before files are written.
+- Conflicting file/parent directory paths also reject before workspace creation.
+- Protected nested source paths are explicitly covered by regression tests.
+- Import supports the documented 200-file count: legacy snapshot digests for
+  <=128 files remain unchanged; larger snapshots use a versioned canonical
+  list with up to 200 entries.
+- Broker writes now recount current workspace file count and total size.
+  A post-import write may not exceed 200 files or 10 MB of content.
+- These are in-process safeguards, **not** race-free Windows handle or ACL
+  enforcement against an untrusted process concurrently mutating workspaces.
+  G02/G06 remain PARTIAL, and deployment remains HOLD.

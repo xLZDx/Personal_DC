@@ -451,3 +451,44 @@ def test_cancel_does_not_report_success_when_docker_stop_fails(harness):
     outcome = broker.emergency_stop()
     assert outcome["stop_latched"] is True
     assert outcome["tasks"][tid] == "STOP_UNVERIFIED"
+
+
+def test_workspace_import_rejects_casefold_alias_and_parent_file(tmp_path):
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    pool = WorkspacePool(root, ())
+    with pytest.raises(Denied, match="INVALID_REQUEST"):
+        pool.create({"src/Foo.py": b"first", "src/foo.py": b"second"})
+    with pytest.raises(Denied, match="INVALID_REQUEST"):
+        pool.create({"src": b"file", "src/module.py": b"nested"})
+    assert not list(root.iterdir())
+
+
+def test_workspace_import_rejects_protected_nested_paths_before_writing(tmp_path):
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    pool = WorkspacePool(root, ())
+    with pytest.raises(Denied, match="ACCESS_DENIED"):
+        pool.create({"ok.txt": b"ok", "src/.git/config": b"secret"})
+    assert not list(root.iterdir())
+
+
+def test_workspace_write_enforces_aggregate_size_limit(tmp_path):
+    root = tmp_path / "pool"
+    root.mkdir()
+    pool = WorkspacePool(root, ())
+    work = pool.create({f"file-{i}.txt": b"x" * 100_000 for i in range(100)})
+    with pytest.raises(Denied, match="QUOTA_EXCEEDED"):
+        pool.write(work.workspace_id, "extra.txt", b"X")
+    assert not (work.path / "extra.txt").exists()
+
+
+def test_workspace_write_enforces_post_import_file_count(tmp_path):
+    root = tmp_path / "pool"
+    root.mkdir()
+    pool = WorkspacePool(root, ())
+    work = pool.create({f"f-{i}.txt": b"a" for i in range(200)})
+    with pytest.raises(Denied, match="QUOTA_EXCEEDED"):
+        pool.write(work.workspace_id, "new.txt", b"new")
+    assert not (work.path / "new.txt").exists()
+    assert pool.write(work.workspace_id, "f-0.txt", b"ok") == hashlib.sha256(b"ok").hexdigest()
