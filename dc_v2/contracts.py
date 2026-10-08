@@ -62,8 +62,10 @@ def digest(value: Any) -> str:
     return hashlib.sha256(canonical(value)).hexdigest()
 
 
-OPERATIONS = frozenset({"file.read", "tools.inspect", "task.propose", "task.start", "task.status",
-                        "task.output", "task.cancel", "changes.propose", "external.propose"})
+OPERATIONS = frozenset({"file.read", "file.write", "file.patch", "file.mkdir",
+                        "file.search", "file.diff", "tools.inspect", "task.propose", "task.start",
+                        "task.status", "task.output", "task.cancel", "task.list",
+                        "changes.propose", "external.propose"})
 
 
 @dataclass(frozen=True)

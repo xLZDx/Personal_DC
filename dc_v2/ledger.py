@@ -180,6 +180,18 @@ class Ledger:
             self._event(con, "RESERVED", operation, principal.binding, manifest.digest)
             return {"operation_id": operation, "status": "RESERVED", "created": True}
 
+    def find_reservation(self, principal: Principal, manifest: Manifest,
+                         idempotency_key: str) -> dict | None:
+        """Read-only exact binding/manifest idempotency lookup (no replay)."""
+        identifier(idempotency_key)
+        with closing(self._connect()) as con:
+            row = con.execute("SELECT id,manifest,state FROM operations WHERE binding=? AND idem=?",
+                              (principal.binding, idempotency_key)).fetchone()
+        if row is None:
+            return None
+        require(row["manifest"] == manifest.digest, "IDEMPOTENCY_CONFLICT")
+        return {"operation_id": row["id"], "status": row["state"]}
+
     def status(self, operation_id: str, principal: Principal) -> dict:
         identifier(operation_id)
         with closing(self._connect()) as con:

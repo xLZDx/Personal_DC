@@ -29,7 +29,7 @@ jobs:
 
       - name: Compile
         shell: pwsh
-        run: python -m compileall -q personal_dc run_server.py
+        run: python -m compileall -q personal_dc dc_v2 scripts_v2 run_server.py
 
       - name: Test
         shell: pwsh

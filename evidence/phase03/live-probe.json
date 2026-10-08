@@ -1,0 +1,43 @@
+{
+  "created_tasks": [
+    "task-3e1d815e50a8a80c3609d780",
+    "task-ca4399ea9798f644e2885b85",
+    "task-f91cf1561654e03dbea8200b",
+    "task-de2749ec4b3022e84428fc72"
+  ],
+  "date": "2026-10-08",
+  "image_id": "sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de",
+  "staging": "D:\\Temp\\Personal_DC_v2_2_isolated\\phase03-live-d9d747ff6d25",
+  "status": "PASS",
+  "synthetic_fixture": true,
+  "tests": {
+    "cancel-long-process": {
+      "detail": "{'task_id': 'task-f91cf1561654e03dbea8200b', 'status': 'EXITED', 'exit_code': 143}",
+      "pass": true
+    },
+    "emergency-latch": {
+      "detail": "{'stop_latched': True, 'tasks': {'task-3e1d815e50a8a80c3609d780': 'STOP_REQUESTED', 'task-ca4399ea9798f644e2885b85': 'STOP_REQUESTED', 'task-f91cf1561654e03dbea8200b': 'STOP_REQUESTED', 'task-de2749ec4b3022e84428fc72': 'STOP_REQUESTED'}}",
+      "pass": true
+    },
+    "engine": {
+      "detail": "pinned local image",
+      "pass": true
+    },
+    "guest-enforced-deadline": {
+      "detail": "{'task_id': 'task-de2749ec4b3022e84428fc72', 'status': 'EXITED', 'exit_code': 124}",
+      "pass": true
+    },
+    "guest-write-and-diff": {
+      "detail": "{'exit_code': 0, 'changed': True, 'output': 'WROTE\\n'}",
+      "pass": true
+    },
+    "python-cli": {
+      "detail": "{'exit_code': 0, 'output': 'PDC_SANDBOX_42\\n'}",
+      "pass": true
+    },
+    "stop-denies-restart": {
+      "detail": "OPERATION_CANCELLED",
+      "pass": true
+    }
+  }
+}
