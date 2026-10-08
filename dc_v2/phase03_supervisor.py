@@ -43,8 +43,13 @@ def reconcile_stop_latch(runner: DockerExecutor) -> dict:
             runner.audit.append("SUPERVISOR_STOP_REQUEST", task.principal_binding,
                                 task.task_id)
             runner._docker("stop", "--time", "2", container_name, timeout=12)
-            runner.audit.append("SUPERVISOR_STOP_ACK", task.principal_binding,
-                                task.task_id)
+            verified_state = json.loads(runner._docker(
+                "inspect", "--format", "{{json .State}}", container_name))
+            require(type(verified_state) is dict and
+                    verified_state.get("Running") is False,
+                    "STOP_UNVERIFIED")
+            runner.audit.append("SUPERVISOR_STOP_CONFIRMED",
+                                task.principal_binding, task.task_id)
             stopped.append(task.task_id)
         except (Denied, ValueError, TypeError, KeyError):
             unverified.append(task.task_id)

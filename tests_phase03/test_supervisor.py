@@ -29,7 +29,8 @@ def inspection(runner, name, *, privileged=False):
     }
 
 
-def bind_daemon(runner, names, *, privileged=False, fail_stop=False):
+def bind_daemon(runner, names, *, privileged=False, fail_stop=False,
+                still_running=False):
     called = []
     real = runner._docker
 
@@ -38,6 +39,8 @@ def bind_daemon(runner, names, *, privileged=False, fail_stop=False):
         if args[0] == "ps":
             return "\n".join(json.dumps({"Names": name, "State": "running"})
                              for name in names)
+        if args[0] == "inspect" and args[1] == "--format":
+            return json.dumps({"Running": still_running})
         if args[0] == "inspect":
             return json.dumps([inspection(runner, args[1], privileged=privileged)])
         if args[0] == "stop":
@@ -105,3 +108,15 @@ def test_untrusted_audit_prevents_supervisor_action(harness):
     runner.audit.path.write_bytes(b"bad audit\n")
     with pytest.raises(Denied, match="AUDIT_INTEGRITY_ERROR"):
         reconcile_stop_latch(runner)
+
+def test_stop_ack_without_running_false_is_unverified(harness):
+    _, ws, runner, principal, manifest, grant = harness
+    tid = runner.start(manifest, grant, principal, ws.workspace_id)["task_id"]
+    runner.stop_file.write_text("STOP operator\n")
+    owned = runner.tasks[tid].container
+    called = bind_daemon(runner, [owned], still_running=True)
+    result = reconcile_stop_latch(runner)
+    assert result["stopped"] == []
+    assert result["unverified"] == [tid]
+    assert result["all_known_stopped"] is False
+    assert any(x[0] == "stop" for x in called)
