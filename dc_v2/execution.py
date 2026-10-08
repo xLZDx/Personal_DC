@@ -403,7 +403,7 @@ class DockerExecutor:
     def cancel(self, task_id: str, principal: Principal) -> dict:
         task = self._owned(task_id, principal, "task.cancel")
         self.audit.append("TASK_CANCEL", principal.binding, task_id)
-        self._docker("stop", "--time", "2", task.container, timeout=12, permitted_failure=True)
+        self._docker("stop", "--time", "2", task.container, timeout=12)
         return {"task_id": task_id, "status": "CANCEL_REQUESTED"}
 
     def list_tasks(self, principal: Principal) -> list[str]:
@@ -422,7 +422,7 @@ class DockerExecutor:
         for task in self.tasks.values():
             try:
                 self._docker("stop", "--time", "2", task.container,
-                             timeout=12, permitted_failure=True)
+                             timeout=12)
                 results[task.task_id] = "STOP_REQUESTED"
             except Denied:
                 results[task.task_id] = "STOP_UNVERIFIED"

@@ -81,3 +81,12 @@ Merge to main: **NOT AUTHORIZED**. Live gateway cutover: **NOT AUTHORIZED**.
 Required operator approvals and technical follow-ups remain in
 `docs/v2_2/OPERATOR_BACKLOG.md`. Feature-branch PR may be reviewed without
 promoting or activating code.
+
+## Follow-up cancellation error reporting
+
+An additional negative test verifies that Docker stop failure **does not**
+produce the public success-like `CANCEL_REQUESTED` response. The failure
+surfaces as `ENVIRONMENT_UNAVAILABLE`. Emergency STOP latches regardless of
+individual Docker stop failures and records affected tasks as
+`STOP_UNVERIFIED`. This does not replace an independent privileged
+orphan-controller or guarantee all workers have terminated.

@@ -433,3 +433,21 @@ def test_task_proposal_is_authorized_but_does_not_start_container(harness):
     assert broker.audit.verify()[0] == 1
     with pytest.raises(Denied, match="ACCESS_DENIED"):
         broker.propose(m, g, principal, work.workspace_id)
+
+
+def test_cancel_does_not_report_success_when_docker_stop_fails(harness):
+    _, work, broker, principal, manifest, grant = harness
+    tid = broker.start(manifest, grant, principal, work.workspace_id)["task_id"]
+    original = broker._docker
+
+    def failure(*args, **kwargs):
+        if args[0] == "stop":
+            raise Denied("ENVIRONMENT_UNAVAILABLE")
+        return original(*args, **kwargs)
+
+    broker._docker = failure
+    with pytest.raises(Denied, match="ENVIRONMENT_UNAVAILABLE"):
+        broker.cancel(tid, principal)
+    outcome = broker.emergency_stop()
+    assert outcome["stop_latched"] is True
+    assert outcome["tasks"][tid] == "STOP_UNVERIFIED"
