@@ -37,6 +37,8 @@ def main() -> None:
     # No inherited control-plane credentials should reach this backend.
     os.environ.pop("CONTROL_PLANE_API_KEY", None)
     os.environ.pop("OPENAI_ADMIN_KEY", None)
+    # v2 is independently versioned; v1 keeps its original 0.1.0 identity.
+    os.environ["PERSONAL_DC_PRODUCT_VERSION"] = "2.0.0"
     # Old FastMCP instance is instantiated with v1's configured port.
     # HTTP app itself is served on v2's independent loopback port.
     app = create_native_app(secret)

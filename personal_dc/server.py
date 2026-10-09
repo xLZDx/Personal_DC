@@ -58,7 +58,7 @@ def health() -> dict[str, Any]:
     return {
         "ok": True,
         "name": "Personal DC",
-        "version": __version__,
+        "version": os.environ.get("PERSONAL_DC_PRODUCT_VERSION", __version__),
         "platform": platform.platform(),
         "python": platform.python_version(),
         "deletion_tool_exposed": False,
