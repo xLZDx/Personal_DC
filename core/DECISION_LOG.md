@@ -74,3 +74,11 @@ Durable decisions and evidence only. Newest entries at the bottom. Full per-comm
   `state/scripts` and every server PowerShell runs `-ExecutionPolicy RemoteSigned -File`. The approval digest still binds the
   script text (same text -> same file). Scheduled task action also uses RemoteSigned. 1342 passed, 4 skipped.
 * **Limit:** Norton's rules are unknown; no guarantee. Exclusions must be added by the operator on folders, not on powershell.exe.
+
+## 2026-10-10 — File-based PowerShell deployed live
+* **Evidence (FACT):** after an operator-consented elevated restart, supervisor `restarts 0, state running`; a live read-only
+  `Get-Service` command ran from `state/scripts/7b40f08e....ps1` (no -EncodedCommand), `Remove-Item` still returns
+  `DELETION_NOT_ALLOWED`, `elevated_server_process: True`.
+* **Gotcha:** once the task is RunLevel Highest, its processes are elevated; a non-elevated shell cannot see their command
+  lines or stop them (Stop-ScheduledTask alone left the old backend/tunnel running and the new supervisor looped on
+  "port 18081 in use"). Restarting needs one elevated shell (UAC consent) or a reboot.
