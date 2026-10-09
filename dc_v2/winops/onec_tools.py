@@ -564,6 +564,25 @@ def _odata_url(publication: str, url: str, path: str, server_root: str, with_cre
     return base + "/"
 
 
+_EDMX_NAMESPACES = {"http://schemas.microsoft.com/ado/2007/06/edmx", "http://docs.oasis-open.org/odata/ns/edmx"}
+
+
+def _edmx_structure_error(root: ET.Element) -> str | None:
+    """OData $metadata must be an EDMX document: Edmx root in a known namespace > DataServices > Schema > EntityContainer."""
+    namespace = root.tag[1:].split("}", 1)[0] if root.tag.startswith("{") else ""
+    if _strip_ns(root.tag) != "Edmx" or namespace not in _EDMX_NAMESPACES:
+        return "NOT_EDMX"
+    services = [c for c in root if _strip_ns(c.tag) == "DataServices"]
+    if len(services) != 1:
+        return "EDMX_DATASERVICES_MISSING"
+    schemas = [c for c in services[0] if _strip_ns(c.tag) == "Schema"]
+    if not schemas:
+        return "EDMX_SCHEMA_MISSING"
+    if not any(_strip_ns(e.tag) == "EntityContainer" for s in schemas for e in s):
+        return "EDMX_ENTITY_CONTAINER_MISSING"
+    return None
+
+
 def _bound_basic_auth(blob: bytes, target: str) -> str:
     """Authorization header for a credential that is BOUND to one scheme/host/port/publication.
 
@@ -632,7 +651,11 @@ def odata_probe(publication: str = "", path: str = "$metadata", url: str = "", c
                     root = _parse_xml_safe(body)
                     sets = [e.attrib.get("Name") for e in root.iter() if _strip_ns(e.tag) == "EntitySet"]
                     types = sum(1 for e in root.iter() if _strip_ns(e.tag) == "EntityType")
-                    result["metadata"] = {"entity_types": types, "entity_sets": len(sets), "sample_sets": sets[:40]}
+                    structure = _edmx_structure_error(root)
+                    if structure:
+                        result["metadata"] = {"error": structure}
+                    else:
+                        result["metadata"] = {"entity_types": types, "entity_sets": len(sets), "sample_sets": sets[:40]}
                 except PolicyError as exc:
                     result["metadata"] = {"error": str(exc)}
         elif "json" in (hdrs.get("Content-Type") or "").lower():

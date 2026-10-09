@@ -27,7 +27,7 @@ from personal_dc.policy import PolicyError
 from .common import (ELEVATED, READ_ONLY, WORKSPACE_WRITE, audit, bounded, limit, safe_path, state_subdir,
                      threaded)
 from .deletion_policy import deny_deletion, deny_deletion_argv
-from .sysrun import ps_file_args, script_file
+from .sysrun import ps_file_args, script_file, verify_script_file
 from .process_tools import (TERMINAL, Managed, authorize_launch, build_env, get_managed, guard_git_args, launch,
                             launch_params, public_meta, read_output, resolve_exe, stop_managed, system32, wait_done)
 
@@ -159,7 +159,10 @@ def powershell_script_text(script: str) -> str:
 
 def powershell_file_args(script: str) -> list[str]:
     """Persist the script as a content-addressed .ps1 and return the -File argument vector (no encoded blobs)."""
-    return ps_file_args(script_file(powershell_script_text(script)))
+    text = powershell_script_text(script)
+    path = script_file(text)
+    verify_script_file(path, text)
+    return ps_file_args(path)
 
 
 def _validate_readonly_exec(exe: Path, args: list[str]) -> None:
@@ -181,7 +184,8 @@ def _quote(arg: str) -> str:
     return subprocess.list2cmdline([arg])
 
 
-def _prepare(shell: str, command: str, argv: list[str] | None, mode: str, env: dict[str, str]) -> dict[str, Any]:
+def _prepare(shell: str, command: str, argv: list[str] | None, mode: str, env: dict[str, str],
+             workdir: Path | None = None) -> dict[str, Any]:
     """Return launch spec: exe, argv|cmdline, display summary, force_approval."""
     if shell == "catalog":
         if command not in CATALOG:
@@ -204,7 +208,7 @@ def _prepare(shell: str, command: str, argv: list[str] | None, mode: str, env: d
         if mode == READ_ONLY:
             _validate_readonly_exec(exe, args)
         elif exe.name.casefold() == "git.exe":
-            args, trusted = guard_git_args(args)
+            args, trusted = guard_git_args(args, workdir)
             force = not trusted
         elif exe.name.casefold() in {"powershell.exe", "pwsh.exe", "cmd.exe"}:
             force = True
@@ -214,8 +218,8 @@ def _prepare(shell: str, command: str, argv: list[str] | None, mode: str, env: d
             raise PolicyError("INVALID_SCRIPT")
         script = validate_readonly_powershell(command) if mode == READ_ONLY else command
         exe = resolve_exe("powershell.exe", env)
-        base = powershell_file_args(script)
-        return {"exe": exe, "argv": base, "cmdline": None, "summary": {"powershell": script},
+        # The .ps1 is persisted only AFTER authorization (see _start): unapproved text never reaches disk.
+        return {"exe": exe, "argv": None, "script": script, "cmdline": None, "summary": {"powershell": script},
                 "force": mode != READ_ONLY}
     if shell == "cmd":
         if mode == READ_ONLY:
@@ -235,20 +239,26 @@ def _start(shell: str, command: str, argv: list[str] | None, cwd: str, timeout_s
         raise PolicyError("UNKNOWN_TRUST_MODE")
     if mode == READ_ONLY and env:
         raise PolicyError("ENV_NOT_ALLOWED_IN_READ_ONLY_MODE")
+    if shell in ("powershell", "cmd"):                      # deletion policy precedes cwd/approval handling
+        deny_deletion(command, source=shell)
+    elif shell == "exec" and argv:
+        deny_deletion_argv(Path(str(argv[0])).name, [str(a) for a in argv[1:]])
     environment = build_env(env)
-    spec = _prepare(shell, command, argv, mode, environment)
     if mode == READ_ONLY:
         workdir = system32()
     else:
         workdir = safe_path(cwd or "D:\\Temp")
         if not workdir.is_dir():
             raise PolicyError("CWD_NOT_A_DIRECTORY")
+    spec = _prepare(shell, command, argv, mode, environment, workdir)
     timeout = max(1, min(int(timeout_s), limit("max_timeout_s")))
     base = launch_params(spec["exe"], [], workdir, timeout, env, mode)
     params = {**base, "shell": shell, "summary": spec["summary"]}
     pending = authorize_launch(mode, spec["exe"], environment, params, approval_id, force_approval=spec["force"])
     if pending:
         return pending
+    if spec.get("script") is not None:
+        spec["argv"] = powershell_file_args(spec["script"])      # persisted + hash-verified right before launch
     return launch(kind="command", label=kind_label, argv=spec["argv"], cmdline=spec["cmdline"],
                   exe_path=spec["exe"], cwd=workdir, env=environment, timeout_s=timeout, mode=mode,
                   approval_id=approval_id, summary=params, kill_orphans=True)

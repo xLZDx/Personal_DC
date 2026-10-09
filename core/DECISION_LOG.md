@@ -82,3 +82,11 @@ Durable decisions and evidence only. Newest entries at the bottom. Full per-comm
 * **Gotcha:** once the task is RunLevel Highest, its processes are elevated; a non-elevated shell cannot see their command
   lines or stop them (Stop-ScheduledTask alone left the old backend/tunnel running and the new supervisor looped on
   "port 18081 in use"). Restarting needs one elevated shell (UAC consent) or a reboot.
+
+## 2026-10-10 — GPT round 2 remediation (F01, F05, F07, F09, ND01, PS01)
+* **Evidence:** GPT-PM round 2 = REQUEST_CHANGES (F01 BLOCKER; F05/F07/F09/ND01/PS01 MAJOR). Full detail:
+  `docs/v2_2/commit-notes/2026-10-10-gpt-review-round2.md`.
+* **Decision:** argument-aware git free set + program-launching config scan (`git_policy.py`); structured git deletion check;
+  EDMX structure validation; per-product ownership/serialization of installs; live persistence of detached descendants;
+  PowerShell script files written only after approval, hash-verified, quota-bounded; deletion policy now precedes cwd/approval.
+* **Verification:** full suite 1424 passed, 4 skipped (agent-run, no CI). Live redeploy needs one UAC-elevated restart.

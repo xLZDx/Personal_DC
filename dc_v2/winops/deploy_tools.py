@@ -14,6 +14,7 @@ Design:
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import re
@@ -331,13 +332,61 @@ def _begin_apply(plan_id: str, approval_id: str | None) -> tuple[dict[str, Any],
         raise PolicyError("INSTALLER_TRUST_CHANGED:" + why)
     if plan["install_dir"]:
         _install_dir(plan["install_dir"])   # re-validate (roots, protected prefixes, reparse points) at apply time
-    pending = approval_or_response("deployment.apply", _bound(plan), approval_id, ELEVATED)
-    if pending:
-        return plan, pending
-    plan.update(state="applying", op="install", applying_at=iso(), reboot_pending_before=_reboot_pending())
-    plan["history"].append({"at": iso(), "event": "applying"})
-    _save_plan(plan)                        # persisted BEFORE the installer can run
+    code = _product_code(plan)
+    # Installations are serialized per ProductCode: overlapping plans for one product cannot both start.
+    with (file_lock(_owners() / (_safe_code(code) + ".lock")) if code else contextlib.nullcontext()):
+        _refuse_overlapping_install(plan, code)
+        pending = approval_or_response("deployment.apply", _bound(plan), approval_id, ELEVATED)
+        if pending:
+            return plan, pending
+        plan.update(state="applying", op="install", applying_at=iso(), reboot_pending_before=_reboot_pending())
+        plan["history"].append({"at": iso(), "event": "applying"})
+        _save_plan(plan)                    # persisted BEFORE the installer can run
     return plan, None
+
+
+def _owners() -> Path:
+    return state_subdir("deploy") / "owners"
+
+
+def _product_code(plan: dict[str, Any]) -> str:
+    return str((plan.get("msi") or {}).get("product_code") or "")
+
+
+def _safe_code(code: str) -> str:
+    return re.sub(r"[^0-9a-f-]", "", code.casefold())
+
+
+def _refuse_overlapping_install(plan: dict[str, Any], code: str) -> None:
+    if not code:
+        return
+    for path in _plans().glob("dpl-*.json"):
+        other = read_json(path, {})
+        if other.get("id") != plan["id"] and _product_code(other).casefold() == code.casefold()                 and other.get("state") in ("applying", "running", "rolling_back"):
+            raise PolicyError("PRODUCT_INSTALL_IN_PROGRESS_BY_ANOTHER_PLAN:" + str(other.get("id")))
+
+
+def _claim_ownership(plan: dict[str, Any]) -> None:
+    """The first plan that observes the product appearing (and did not find it before) owns it, exactly once."""
+    code = _product_code(plan)
+    if not code or plan.get("product_preexisting"):
+        return
+    with file_lock(_owners() / (_safe_code(code) + ".lock")):
+        marker = _owners() / (_safe_code(code) + ".json")
+        existing = read_json(marker, {})
+        if not existing:
+            atomic_write_json(marker, {"plan": plan["id"], "product_code": code, "claimed_at": iso()})
+            plan["ownership"] = "owned"
+        else:
+            plan["ownership"] = "owned" if existing.get("plan") == plan["id"] else "conflict:" + str(existing.get("plan"))
+
+
+def _owns(plan: dict[str, Any]) -> bool:
+    code = _product_code(plan)
+    if not code:
+        return False
+    marker = read_json(_owners() / (_safe_code(code) + ".json"), {})
+    return marker.get("plan") == plan["id"] and plan.get("ownership") == "owned"
 
 
 def _run_apply(plan: dict[str, Any], plan_id: str, approval_id: str | None, timeout_s: int) -> dict[str, Any]:
@@ -441,6 +490,10 @@ def _settle(plan: dict[str, Any]) -> None:
     before = set(plan["inventory_before"])
     plan["new_software_keys"] = sorted({f'{r["scope"]}:{r["key"]}' for r in _installed()} - before)[:50]
     plan["ended_at"] = iso()
+    product = _product_code(plan)
+    if installing and plan["state"] in ("installed", "installed_unconfirmed") and product and any(
+            k.casefold().endswith(":" + product.casefold()) for k in plan["new_software_keys"]):
+        _claim_ownership(plan)
     plan["history"].append({"at": iso(), "event": plan["state"], "exit_code": code})
     _save_plan(plan)
     audit("deployment.end", plan["state"], plan_id=plan["id"], exit_code=code)
@@ -470,7 +523,7 @@ def deployment_rollback(plan_id: str, approval_id: str | None = None, timeout_s:
         raise PolicyError("PLAN_DIGEST_MISMATCH")
     code = (plan.get("msi") or {}).get("product_code") or ""
     owned = any(k.casefold().endswith(":" + code.casefold()) for k in plan.get("new_software_keys") or []) if code else False
-    if plan["state"] == "failed" or not owned:
+    if plan["state"] == "failed" or not owned or not _owns(plan):
         return {"status": "NOT_SUPPORTED", "reason": "INSTALLATION_OWNERSHIP_NOT_PROVEN",
                 "manual": "Only a successfully completed install whose ProductCode appeared during this plan can be rolled "
                           "back automatically; a failed or ambiguous install must be reviewed manually."}

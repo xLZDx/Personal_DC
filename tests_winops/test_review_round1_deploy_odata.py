@@ -150,6 +150,8 @@ def test_rollback_of_an_owned_install_asks_for_approval(plan_env, monkeypatch, n
     native_overlay(deny_deletion=False)
     monkeypatch.setattr(deploy_tools, "_settle", lambda plan: None)
     owned = _settled(plan_env, state="installed", new_software_keys=[f"HKLM:{PRODUCT.lower()}"])
+    deploy_tools._claim_ownership(owned)                # what a real apply does once the product appears (F07)
+    deploy_tools._save_plan(owned)
     out = deploy_tools.deployment_rollback(owned["id"])
     assert out["status"] == "APPROVAL_REQUIRED" and plan_env.launches == []
 

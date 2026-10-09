@@ -29,6 +29,7 @@ from personal_dc.policy import PolicyError
 
 from . import procs
 from .deletion_policy import deny_deletion_argv
+from .git_policy import git_is_free
 from .common import (ELEVATED, READ_ONLY, WORKSPACE_WRITE, approval_or_response, atomic_write_json, audit,
                      iso, limit, native_config, new_id, read_json, redact, redact_text, safe_path,
                      sha256_text, state_subdir, threaded, valid_id)
@@ -142,7 +143,7 @@ def _git_subcommand(args: list[str]) -> str:
     return ""
 
 
-def guard_git_args(args: list[str]) -> tuple[list[str], bool]:
+def guard_git_args(args: list[str], cwd: Path | None = None) -> tuple[list[str], bool]:
     """Return (hardened args, auto_trusted).
 
     Hooks, fsmonitor and external helper protocols are disabled for every git call. Only a small set
@@ -176,9 +177,14 @@ def guard_git_args(args: list[str]) -> tuple[list[str], bool]:
     if sub in ("config", "credential", "filter-branch", "daemon", "http-backend"):
         raise PolicyError("GIT_SUBCOMMAND_NOT_ALLOWED")
     free = set(native_config()["git_free_subcommands"])
+    trusted, _why = git_is_free(sub, list(args[1:]), cwd, free)
+    rest = list(args)
+    if sub in ("diff", "log", "show"):       # never run an external diff driver / textconv from repository config
+        rest = [args[0], "--no-ext-diff", "--no-textconv", *args[1:]]
     hardened = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=NUL", "-c", "protocol.ext.allow=never",
-                "-c", "core.sshCommand=ssh", *args]
-    return hardened, sub in free
+                "-c", "core.sshCommand=ssh", "-c", "core.pager=cat", "-c", "core.editor=false",
+                "-c", "sequence.editor=false", *rest]
+    return hardened, trusted
 
 
 def is_trusted_dev_tool(exe_path: Path, env: dict[str, str]) -> bool:
@@ -331,6 +337,38 @@ def _kill(managed: Managed) -> list[int]:
     return killed
 
 
+MAX_TRACKED_DESCENDANTS = 1000
+
+
+def _record_descendants(managed: Managed, pids: list[int]) -> bool:
+    """Persist (pid, creation time) of descendants of a detached process; returns True when something was added.
+
+    Identities are written while the process runs so a backend restart or an early parent exit cannot lose them;
+    overflow is flagged (``orphans_truncated``) instead of silently dropped.
+    """
+    meta = managed.meta
+    meta.setdefault("orphans", [])
+    known = {o["pid"] for o in meta["orphans"]}
+    added = False
+    for pid in pids:
+        if pid == meta.get("pid") or pid in known:
+            continue
+        created = procs.creation_time(pid)
+        if not created:
+            continue
+        if len(meta["orphans"]) >= MAX_TRACKED_DESCENDANTS:
+            meta["orphans_truncated"] = True
+            added = True
+            break
+        meta["orphans"].append({"pid": pid, "created": created})
+        known.add(pid)
+        added = True
+    if added:
+        with managed.lock, contextlib.suppress(Exception):
+            managed.save()
+    return added
+
+
 def _finalize(managed: Managed, exit_code: int | None, state: str) -> None:
     try:
         with managed.lock:
@@ -346,15 +384,8 @@ def _finalize(managed: Managed, exit_code: int | None, state: str) -> None:
             with contextlib.suppress(Exception):
                 if managed.kill_orphans:
                     job.terminate()
-                else:       # explicit detach: remember descendants (pid + creation time) so they stay controllable
-                    orphans = []
-                    for pid in job.pids():
-                        created = procs.creation_time(pid)
-                        if pid != managed.meta.get("pid") and created and len(orphans) < 100:
-                            orphans.append({"pid": pid, "created": created})
-                    managed.meta["orphans"] = orphans
-                    with managed.lock:
-                        managed.save()
+                else:       # explicit detach: last chance to record descendants (merged with those tracked live)
+                    _record_descendants(managed, job.pids())
                 job.close()
         _audit_quiet("process.end", managed.meta["state"], process_id=managed.meta["id"], exit_code=exit_code,
                      kill_verified=managed.meta.get("kill_verified"))
@@ -398,6 +429,7 @@ def _monitor_loop(managed: Managed) -> None:
     deadline = _deadline_for(meta)
     adopted = managed.popen is None
     seen: set[int] = set()
+    last_scan = 0.0
     while True:
         if adopted:
             if not procs.is_alive(meta["pid"], meta["created"]):
@@ -431,11 +463,19 @@ def _monitor_loop(managed: Managed) -> None:
             return
         job = managed.job
         if job is not None:
-            for p in job.pids():
+            live = job.pids()
+            for p in live:
                 if p not in seen and len(meta["children_seen"]) < 200:
                     seen.add(p)
                     if p != meta["pid"]:
                         meta["children_seen"].append(p)
+        elif adopted and time.monotonic() - last_scan >= 2.0:       # no Job Object after a restart: walk the tree
+            last_scan = time.monotonic()
+            live = [p for p, _created in procs.descendants(meta["pid"], meta["created"])]
+        else:
+            live = []
+        if not managed.kill_orphans and live:
+            _record_descendants(managed, live)
 
 
 def _prune_old() -> None:
@@ -539,7 +579,8 @@ def stop_managed(managed: Managed, reason: str = "stopped") -> dict[str, Any]:
     if not (pid and created and procs.is_alive(pid, created)):
         code = managed.popen.poll() if managed.popen is not None else None
         _finalize(managed, code, "exited" if code is not None else "exited_unknown")
-        return {"id": meta["id"], "state": meta["state"], "already_ended": True}
+        return {"id": meta["id"], "state": meta["state"], "already_ended": True,
+                "orphans_stopped": _stop_orphans(managed)}
     managed.stop_reason = reason
     managed.cancel.set()
     wait_done(managed, 10)
@@ -548,7 +589,7 @@ def stop_managed(managed: Managed, reason: str = "stopped") -> dict[str, Any]:
         wait_done(managed, 5)
     audit("process.stop", meta["state"], process_id=meta["id"], kill_verified=meta.get("kill_verified"))
     return {"id": meta["id"], "state": meta["state"], "exit_code": meta["exit_code"],
-            "kill_verified": meta.get("kill_verified")}
+            "kill_verified": meta.get("kill_verified"), "orphans_stopped": _stop_orphans(managed)}
 
 
 # ---------------------------------------------------------------- output
@@ -695,7 +736,7 @@ def process_start(executable: str, args: list[str] | None = None, cwd: str = "",
     free = True
     deny_deletion_argv(exe_path.name, args)
     if exe_path.name.casefold() == "git.exe":
-        args, free = guard_git_args(args)
+        args, free = guard_git_args(args, workdir)
     timeout = max(1, min(int(timeout_s), limit("max_process_lifetime_s")))
     params = launch_params(exe_path, args, workdir, timeout, env, mode)
     if detach:

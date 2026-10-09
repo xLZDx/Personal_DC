@@ -90,12 +90,50 @@ def script_file(text: str) -> Path:
     path = folder / (hashlib.sha256(body).hexdigest()[:40] + ".ps1")
     if not path.exists() or path.read_bytes() != body:
         atomic_write_bytes(path, body)
-    cutoff = time.time() - SCRIPT_KEEP_DAYS * 86400
-    for old in folder.glob("*.ps1"):       # server-owned staging files only; best-effort housekeeping
-        with contextlib.suppress(OSError):
-            if old != path and old.stat().st_mtime < cutoff:
-                old.unlink()
+    _prune_scripts(folder, keep=path)
     return path
+
+
+SCRIPT_MAX_FILES = 200
+SCRIPT_MAX_BYTES = 8 * 1024 * 1024
+_PRUNE_STATE = {"last": 0.0}
+
+
+def _prune_scripts(folder: Path, keep: Path) -> None:
+    """Bounded housekeeping of server-owned staging scripts: age, file count and total bytes; at most once a minute
+    and at most 100 removals per pass, so a flood of requests can neither fill the disk nor stall the backend."""
+    now = time.time()
+    if now - _PRUNE_STATE["last"] < 60:
+        return
+    _PRUNE_STATE["last"] = now
+    entries = []
+    with contextlib.suppress(OSError):
+        for item in folder.glob("*.ps1"):
+            st = item.stat()
+            entries.append((st.st_mtime, st.st_size, item))
+    entries.sort(key=lambda e: e[0])                       # oldest first
+    total = sum(e[1] for e in entries)
+    cutoff = now - SCRIPT_KEEP_DAYS * 86400
+    removed = 0
+    for mtime, size, item in entries:
+        if removed >= 100 or item == keep:
+            continue
+        if mtime < cutoff or len(entries) - removed > SCRIPT_MAX_FILES or total > SCRIPT_MAX_BYTES:
+            with contextlib.suppress(OSError):
+                item.unlink()
+                total -= size
+                removed += 1
+
+
+def verify_script_file(path: Path, text: str) -> None:
+    """Re-read the file immediately before launch: the bytes that run must be exactly the approved text."""
+    expected = b"\xef\xbb\xbf" + text.encode("utf-8")
+    try:
+        actual = path.read_bytes()
+    except OSError as exc:
+        raise PolicyError("SCRIPT_FILE_UNREADABLE") from exc
+    if actual != expected:
+        raise PolicyError("SCRIPT_FILE_CHANGED_BEFORE_LAUNCH")
 
 
 def ps_file_args(path: Path) -> list[str]:
