@@ -60,3 +60,9 @@ Durable decisions and evidence only. Newest entries at the bottom. Full per-comm
 * **Decision:** "without the right to delete" is enforced by tools (`deletion_policy.py`, `deny_deletion` default true),
   not by the OS; automated uninstall (deployment_rollback) is refused while the policy is on.
 * **Evidence:** 1342 passed, 4 skipped. Residual risk documented in KNOWN_LIMITATIONS.md.
+
+## 2026-10-10 — Elevated v2 server deployed
+* **Evidence (FACT):** the operator consented to the UAC prompt; task `Personal_DC_V2_Tunnel` is RunLevel Highest; live
+  `native_security_status` reports `elevated_server_process: True`; live `Remove-Item` via command_execute returned
+  `DELETION_NOT_ALLOWED:DELETION_VERB:Remove-Item` while a read-only `Get-Service` command still works.
+* **Rollback:** `update_v2_native_autostart.ps1 -Unelevate` (Limited) or `-Rollback` (immutable ORIGINAL xml).
