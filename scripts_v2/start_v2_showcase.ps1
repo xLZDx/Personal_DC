@@ -42,7 +42,7 @@ function Check-Port([int]$Port) {
 function Trusted-Backend([int]$ProcessId) {
     $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
     return [bool]($proc -and $proc.Name -ieq "python.exe" -and
-        $proc.CommandLine -match "dc_v2.showcase_mcp")
+        $proc.CommandLine -match "dc_v2.native_personal_mcp")
 }
 $StartedBackend = $null
 $BackendPidPath = Join-Path $Run "backend.pid"
@@ -61,7 +61,7 @@ if (Check-Port 18766) {
     $env:CONTROL_PLANE_API_KEY = $null
     $env:PDC_V2_BACKEND_KEY = $backendSecret
     try {
-        $StartedBackend = Start-Process -FilePath $Python -ArgumentList "-m", "dc_v2.showcase_mcp" -WorkingDirectory $Repo -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdOut -RedirectStandardError $stdErr
+        $StartedBackend = Start-Process -FilePath $Python -ArgumentList "-m", "dc_v2.native_personal_mcp" -WorkingDirectory $Repo -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdOut -RedirectStandardError $stdErr
     } finally {
         $env:PDC_V2_BACKEND_KEY = $null
     }
@@ -77,7 +77,7 @@ if (Check-Port 18766) {
 }
 $env:PDC_V2_BACKEND_KEY = $backendSecret
 try {
-    & $Python (Join-Path $PSScriptRoot "probe_v2_showcase.py")
+    & $Python (Join-Path $PSScriptRoot "probe_native_personal.py")
     if ($LASTEXITCODE -ne 0) { throw "V2 backend positive/negative local MCP probe failed." }
 } finally {
     $env:PDC_V2_BACKEND_KEY = $null
