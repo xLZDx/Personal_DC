@@ -247,3 +247,32 @@ def test_verified_rollback_retires_ownership_so_a_later_plan_can_claim(plan_env)
     third = plan_env.make_plan()
     deploy_tools._claim_ownership(third)
     assert third["ownership"] == "owned" and deploy_tools._owns(third) is True
+
+
+def test_unknown_installer_outcome_never_acquires_ownership_or_rollback(plan_env, monkeypatch, native_overlay):
+    native_overlay(deny_deletion=False)
+    plan = plan_env.make_plan(state="running", op="install", process_id="prc-lost000000000000", inventory_before=[])
+    lost = SimpleNamespace(meta={"state": "exited_unknown", "exit_code": None})
+    monkeypatch.setattr(deploy_tools.pt, "get_managed", lambda pid: lost)
+    # the process result is gone, then somebody ELSE installs the product: the registry now shows it
+    monkeypatch.setattr(deploy_tools, "_installed", lambda: [{"scope": "HKLM", "key": PRODUCT, "name": "x", "version": "1"}])
+    deploy_tools._settle(plan)
+    saved = deploy_tools._load_plan(plan["id"])
+    assert saved["state"] == "unknown" and "ownership" not in saved and deploy_tools._owns(saved) is False
+    with pytest.raises(PolicyError, match="ROLLBACK_NOT_APPLICABLE_IN_STATE:unknown"):
+        deploy_tools.deployment_rollback(saved["id"])
+    monkeypatch.setattr(deploy_tools, "_settle", lambda p: None)
+    saved.update(state="installed", new_software_keys=[f"HKLM:{PRODUCT}"])
+    deploy_tools._save_plan(saved)
+    assert deploy_tools.deployment_rollback(saved["id"])["reason"] == "INSTALLATION_OWNERSHIP_NOT_PROVEN"
+    assert plan_env.launches == []
+
+
+def test_positive_exit_code_zero_still_claims_ownership(plan_env, monkeypatch):
+    plan = plan_env.make_plan(state="running", op="install", process_id="prc-done000000000000", inventory_before=[])
+    done = SimpleNamespace(meta={"state": "exited", "exit_code": 0})
+    monkeypatch.setattr(deploy_tools.pt, "get_managed", lambda pid: done)
+    monkeypatch.setattr(deploy_tools, "_installed", lambda: [{"scope": "HKLM", "key": PRODUCT, "name": "x", "version": "1"}])
+    deploy_tools._settle(plan)
+    saved = deploy_tools._load_plan(plan["id"])
+    assert saved["state"] == "installed" and saved["ownership"] == "owned" and deploy_tools._owns(saved) is True

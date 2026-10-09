@@ -54,13 +54,47 @@ def test_repo_config_that_launches_programs_disables_free_git(line, repo):
     assert pt.guard_git_args(["add", "x"], repo)[1] is False
 
 
-def test_system_and_global_scopes_are_trusted_only_the_repository_scope_is_not(repo):
-    # Git for Windows ships filter.lfs / credential.helper in the system config: that must not disable free git.
+def test_listing_trusts_only_repository_independent_scope_from_an_owned_file():
+    owned = {git_policy._norm("C:/Program Files/Git/etc/gitconfig"), git_policy._norm("C:/Users/u/.gitconfig")}
+    sysf, home, evil = "file:C:/Program Files/Git/etc/gitconfig", "file:C:/Users/u/.gitconfig", "file:D:/work/repo/evil.cfg"
+    tab = chr(9)
+    ok = (f"system{tab}{sysf}{tab}filter.lfs.clean=git-lfs clean\nglobal{tab}{sysf}{tab}credential.helper=manager\n"
+          f"global{tab}{home}{tab}filter.lfs.smudge=git-lfs smudge\nlocal{tab}file:D:/work/repo/.git/config{tab}core.bare=false\n")
+    assert git_policy.config_risk_from_listing(ok, owned) is None
+    # same key, global scope, but pulled in from a repository-writable file through include/includeIf
+    assert git_policy.config_risk_from_listing(ok + f"global{tab}{evil}{tab}filter.x.clean=calc.exe\n", owned) == "filter.x.clean"
+    assert git_policy.config_risk_from_listing(f"local{tab}{sysf}{tab}core.editor=calc.exe\n", owned) == "core.editor"
+    assert git_policy.config_risk_from_listing(f"command{tab}command line:{tab}core.editor=calc.exe\n", owned) == "core.editor"
+    assert git_policy.config_risk_from_listing(f"global{tab}file:C:/Users/u/.gitconfig2{tab}alias.x=!calc\n", owned) == "alias.x"
+    assert git_policy.config_risk_from_listing("filter.lfs.clean=x\n", owned) == "filter.lfs.clean"   # no provenance: risky
+    assert git_policy.config_risk_from_listing(f"global{tab}{sysf}{tab}filter.lfs.clean=x\n") == "filter.lfs.clean"  # no trusted set
+
+
+def test_real_git_for_windows_system_config_does_not_disable_free_git(repo):
     assert pt.guard_git_args(["status"], repo)[1] is True
-    listing = "system\tfilter.lfs.clean=git-lfs clean\nglobal\tcredential.helper=manager\nlocal\tcore.bare=false\n"
-    assert git_policy.config_risk_from_listing(listing) is None
-    assert git_policy.config_risk_from_listing(listing + "local\tfilter.x.clean=calc.exe\n") == "filter.x.clean"
-    assert git_policy.config_risk_from_listing("command\tcore.editor=calc.exe\n") == "core.editor"
+
+
+@pytest.mark.parametrize("conditional", [False, True])
+def test_global_include_of_a_repository_writable_file_is_untrusted_and_never_runs(conditional, repo, tmp_path, monkeypatch):
+    sentinel = repo / "filter-ran.txt"
+    script = repo / "filt.cmd"
+    script.write_text(f'@echo ran> "{sentinel}"\r\n@more\r\n', encoding="utf-8")
+    evil = repo / "evil.gitconfig"
+    evil.write_text(f'[filter "x"]\n\tclean = {script.as_posix()}\n', encoding="utf-8")
+    (repo / ".gitattributes").write_text("* filter=x\n", encoding="utf-8")
+    (repo / "f.txt").write_text("data\n", encoding="utf-8")
+    home = tmp_path / "userhome"
+    home.mkdir()
+    header = f'[includeIf "gitdir/i:{repo.as_posix()}/"]' if conditional else "[include]"
+    (home / ".gitconfig").write_text(f"{header}\n\tpath = {evil.as_posix()}\n", encoding="utf-8")
+    monkeypatch.setenv("USERPROFILE", str(home))
+    assert pt.git_config_risk(repo) == "filter.x.clean"
+    assert pt.guard_git_args(["add", "f.txt"], repo)[1] is False
+    via_exec = ct.command_execute("", shell="exec", argv=["git.exe", "add", "f.txt"], cwd=str(repo), mode="workspace_write")
+    assert via_exec["status"] == "APPROVAL_REQUIRED"
+    via_start = pt.process_start("git.exe", ["add", "f.txt"], cwd=str(repo), mode="workspace_write")
+    assert via_start["status"] == "APPROVAL_REQUIRED"
+    assert not sentinel.exists()
 
 
 def test_filter_in_a_parent_repo_is_found_from_a_nested_directory_and_never_runs(repo):
@@ -136,6 +170,17 @@ GOOD = (f"<edmx:Edmx Version='1.0' xmlns:edmx='{EDMX}'><edmx:DataServices><Schem
     (GOOD.replace(b" Namespace='N'", b""), False),                          # schema without Namespace attribute
     (GOOD.replace(b"Name='C'", b""), False),                                # container without Name
     (GOOD.replace(b" Version='1.0'", b""), False),                          # Edmx without Version
+    (GOOD.replace(b"'1.0'", b"'bogus'"), False),
+    (GOOD.replace(b"'1.0'", b"'999.0'"), False),
+    (GOOD.replace(b"'1.0'", b"'4.0'"), False),                              # V4 version in the legacy namespace
+    (GOOD.replace(b"2009/11/edm", b"2008/09/edm"), True),                  # other legacy EDM namespace is fine
+    (GOOD.replace(b"xmlns='" + EDM.encode() + b"'", b"xmlns='http://docs.oasis-open.org/odata/ns/edm'"), False),  # EDM/EDMX generation mismatch
+    (b"<edmx:Edmx Version='5.0' xmlns:edmx='http://docs.oasis-open.org/odata/ns/edmx'><edmx:DataServices>"
+     b"<Schema Namespace='N' xmlns='http://docs.oasis-open.org/odata/ns/edm'><EntityContainer Name='C'/></Schema>"
+     b"</edmx:DataServices></edmx:Edmx>", False),
+    (b"<edmx:Edmx Version='4.0' xmlns:edmx='http://docs.oasis-open.org/odata/ns/edmx'><edmx:DataServices>"
+     b"<Schema Namespace='N' xmlns='" + EDM.encode() + b"'><EntityContainer Name='C'/></Schema>"
+     b"</edmx:DataServices></edmx:Edmx>", False),
     (GOOD, True),
     (b"<edmx:Edmx Version='4.0' xmlns:edmx='http://docs.oasis-open.org/odata/ns/edmx'><edmx:DataServices>"
      b"<Schema Namespace='N' xmlns='http://docs.oasis-open.org/odata/ns/edm'><EntityContainer Name='C'/></Schema>"

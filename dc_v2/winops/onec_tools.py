@@ -565,6 +565,8 @@ def _odata_url(publication: str, url: str, path: str, server_root: str, with_cre
 
 
 _EDMX_NAMESPACES = {"http://schemas.microsoft.com/ado/2007/06/edmx", "http://docs.oasis-open.org/odata/ns/edmx"}
+_EDMX_VERSIONS = {"http://schemas.microsoft.com/ado/2007/06/edmx": {"1.0"},
+                  "http://docs.oasis-open.org/odata/ns/edmx": {"4.0", "4.01"}}
 _EDM_NAMESPACES = {"http://schemas.microsoft.com/ado/2006/04/edm", "http://schemas.microsoft.com/ado/2007/05/edm",
                    "http://schemas.microsoft.com/ado/2008/01/edm", "http://schemas.microsoft.com/ado/2008/09/edm",
                    "http://schemas.microsoft.com/ado/2009/11/edm", "http://docs.oasis-open.org/odata/ns/edm"}
@@ -578,13 +580,16 @@ def _edmx_structure_error(root: ET.Element) -> str | None:
     """OData $metadata must be EDMX: edmx:Edmx[Version] > edmx:DataServices (same namespace) > edm:Schema[Namespace]
     > edm:EntityContainer[Name], with Schema/EntityContainer in a known EDM namespace (never namespace-less)."""
     namespace = _ns(root.tag)
-    if _strip_ns(root.tag) != "Edmx" or namespace not in _EDMX_NAMESPACES or not root.get("Version"):
+    if _strip_ns(root.tag) != "Edmx" or namespace not in _EDMX_NAMESPACES:
         return "NOT_EDMX"
+    if (root.get("Version") or "").strip() not in _EDMX_VERSIONS[namespace]:
+        return "EDMX_VERSION_UNSUPPORTED"
     services = [c for c in root if _strip_ns(c.tag) == "DataServices" and _ns(c.tag) == namespace]
     if len(services) != 1:
         return "EDMX_DATASERVICES_MISSING"
+    oasis = namespace == "http://docs.oasis-open.org/odata/ns/edmx"          # EDMX and EDM generations must match
     schemas = [c for c in services[0] if _strip_ns(c.tag) == "Schema" and _ns(c.tag) in _EDM_NAMESPACES
-               and (c.get("Namespace") or "").strip()]
+               and (_ns(c.tag) == "http://docs.oasis-open.org/odata/ns/edm") == oasis and (c.get("Namespace") or "").strip()]
     if not schemas:
         return "EDMX_SCHEMA_MISSING"
     if not any(_strip_ns(e.tag) == "EntityContainer" and _ns(e.tag) == _ns(s.tag) and (e.get("Name") or "").strip()

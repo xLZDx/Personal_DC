@@ -29,7 +29,7 @@ from personal_dc.policy import PolicyError
 
 from . import procs
 from .deletion_policy import deny_deletion_argv
-from .git_policy import config_risk_from_listing, git_is_free
+from .git_policy import config_risk_from_listing, git_is_free, trusted_config_origins
 from .common import (ELEVATED, READ_ONLY, WORKSPACE_WRITE, approval_or_response, atomic_write_json, audit,
                      iso, limit, native_config, new_id, read_json, redact, redact_text, safe_path,
                      sha256_text, state_subdir, threaded, valid_id)
@@ -152,14 +152,14 @@ def git_config_risk(cwd: Path) -> str | None:
     env = build_env(None)
     try:
         exe = resolve_exe("git.exe", env)
-        done = subprocess.run([str(exe), "config", "--list", "--show-scope"], cwd=str(cwd), env=env,
+        done = subprocess.run([str(exe), "config", "--list", "--show-scope", "--show-origin"], cwd=str(cwd), env=env,
                               stdin=subprocess.DEVNULL, capture_output=True, timeout=10, check=False,
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError, PolicyError):
         return "GIT_CONFIG_UNAVAILABLE"
     if done.returncode != 0:
         return "GIT_CONFIG_UNREADABLE"
-    return config_risk_from_listing(done.stdout.decode("utf-8", errors="replace"))
+    return config_risk_from_listing(done.stdout.decode("utf-8", errors="replace"), trusted_config_origins(env, exe))
 
 
 def guard_git_args(args: list[str], cwd: Path | None = None) -> tuple[list[str], bool]:
@@ -510,6 +510,22 @@ def _prune_old() -> None:
                     shutil.rmtree(directory, ignore_errors=True)
 
 
+def _reconcile_job_survivors(managed: Managed) -> None:
+    """The root is gone but its named job may still hold live descendants: record their identities now."""
+    name = managed.meta.get("job_name")
+    job = procs.Job.open(name) if name else None
+    if job is None:
+        return
+    try:
+        members = [p for p in job.pids() if p != managed.meta.get("pid")]
+        if members:
+            _record_descendants(managed, members)
+            managed.meta["containment"] = "job"
+            _audit_quiet("process.recover", "SURVIVORS_RECORDED", process_id=managed.meta["id"], count=len(members))
+    finally:
+        job.close()
+
+
 def ensure_recovered() -> None:
     """Re-adopt or close out processes recorded by a previous server instance (once, under a lock)."""
     global _RECOVERED
@@ -542,6 +558,7 @@ def ensure_recovered() -> None:
                 else:
                     if pid and created and procs.is_alive(pid, created) and meta.get("state") == "starting":
                         procs.terminate_tree(pid, created)   # crashed mid-launch: never leave it uncontained
+                    _reconcile_job_survivors(managed)
                     meta.update(state="exited_unknown", ended_at=iso(), stop_reason="lost_across_restart")
                     atomic_write_json(directory / "meta.json", meta)
                     _audit_quiet("process.recover", "LOST", process_id=meta["id"])
@@ -576,6 +593,21 @@ def _stop_orphans(managed: Managed) -> list[int]:
     """Terminate recorded detached descendants whose (pid, creation time) identity still matches."""
     stopped: list[int] = []
     remaining = []
+    name = managed.meta.get("job_name")
+    job = procs.Job.open(name) if name else None
+    if job is not None:                       # the kernel job is the authority on membership, not sampled PIDs
+        try:
+            members = [p for p in job.pids() if p != managed.meta.get("pid")]
+            if members:
+                _record_descendants(managed, members)
+                identities = [(o["pid"], o["created"]) for o in managed.meta.get("orphans") or [] if o["pid"] in members]
+                job.terminate()
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and any(procs.is_alive(p, c) for p, c in identities):
+                    time.sleep(0.1)
+                stopped.extend(p for p, c in identities if not procs.is_alive(p, c))
+        finally:
+            job.close()
     for item in managed.meta.get("orphans") or []:
         pid, created = item.get("pid"), item.get("created")
         if pid and created and procs.is_alive(pid, created):

@@ -557,3 +557,49 @@ def test_a_detached_record_without_a_job_name_is_reported_as_incompletely_contai
         assert meta["containment"] == "scan_only_incomplete"
     finally:
         proc.kill()
+
+
+def _dead_root_with_job_survivor(isolated_state, work, rid, state):
+    """A finished root + a live child that still belongs to the named job: what a restart finds after the parent died."""
+    root = subprocess.Popen([PY, "-c", "pass"], stdin=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+    root_created = procs.creation_time(root.pid)
+    root.wait(10)
+    name = "Local\\pdc-job-" + rid
+    job = procs.Job(name=name)
+    child = subprocess.Popen([PY, "-c", "import time;time.sleep(120)"], stdin=subprocess.DEVNULL,
+                             creationflags=subprocess.CREATE_NO_WINDOW)
+    assert _wait(lambda: procs.creation_time(child.pid), 10)
+    assert job.assign(int(child._handle))
+    _write_record(isolated_state, rid, work, state=state, exe=PY, pid=root.pid, created=root_created, job_name=name)
+    return job, child
+
+
+def test_recovery_with_an_already_exited_root_records_job_survivors_and_stop_terminates_them(isolated_state, work):
+    rid = "prc-9999999999999999"
+    job, child = _dead_root_with_job_survivor(isolated_state, work, rid, "running")
+    try:
+        pt._RECOVERED = False
+        pt.ensure_recovered()                                       # the root is dead; the named job still has a member
+        meta = _disk_meta(isolated_state / "procs" / rid)
+        assert meta["state"] == "exited_unknown" and meta["containment"] == "job"
+        assert child.pid in [o["pid"] for o in meta["orphans"]]
+        job.close()                                                  # the old backend's handle is gone: only the name remains
+        result = pt.process_stop(rid)                                # original managed id, no PID sampling needed
+        assert child.pid in result["orphans_stopped"]
+        assert _wait(lambda: child.poll() is not None, 15)
+        assert _disk_meta(isolated_state / "procs" / rid)["orphans"] == []
+    finally:
+        child.kill()
+
+
+def test_stop_of_a_terminal_record_uses_job_membership_not_only_recorded_pids(isolated_state, work):
+    rid = "prc-9999999999999998"
+    job, child = _dead_root_with_job_survivor(isolated_state, work, rid, "exited")    # no orphans were ever recorded
+    try:
+        assert _disk_meta(isolated_state / "procs" / rid).get("orphans") in (None, [])
+        result = pt.process_stop(rid)
+        assert child.pid in result["orphans_stopped"]
+        assert _wait(lambda: child.poll() is not None, 15)
+    finally:
+        job.close()
+        child.kill()

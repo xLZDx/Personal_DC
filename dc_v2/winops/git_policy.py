@@ -13,6 +13,7 @@ Everything that does not qualify is not "denied": it returns APPROVAL_REQUIRED s
 """
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -38,25 +39,51 @@ _COMMIT_FORBIDDEN = {"--edit", "--template", "--file", "--reuse-message", "--ree
                      "--amend", "--interactive", "--patch", "--all-from"}
 
 
-def config_risk_from_listing(listing: str) -> str | None:
-    """First program-launching key in ``git config --list`` output (``key=value`` lines), or None.
+def _norm(path: str) -> str:
+    return os.path.normcase(os.path.normpath(path))
 
-    The listing (``git config --list --show-scope``) is produced by git itself for the real working directory, so
-    repository discovery (parent directories, worktrees, gitfile redirects) and includes are resolved by git rather
-    than re-implemented here. Only scopes a repository controls (local, worktree, command) are untrusted: system and
-    global configuration belong to the administrator/user (e.g. Git for Windows ships ``filter.lfs`` and
-    ``credential.helper`` there), whereas a repository's own config must never name a program.
+
+def trusted_config_origins(env: dict[str, str], git_exe: Path | None) -> set[str]:
+    """Exact config files the administrator/user owns (never reachable through workspace tools or a repository)."""
+    home = env.get("USERPROFILE", "")
+    candidates = []
+    if home:
+        candidates += [Path(home) / ".gitconfig", Path(home) / ".config" / "git" / "config"]
+    for var in ("ProgramFiles", "ProgramFiles(x86)"):
+        if env.get(var):
+            candidates.append(Path(env[var]) / "Git" / "etc" / "gitconfig")
+    if env.get("ProgramData"):
+        candidates.append(Path(env["ProgramData"]) / "Git" / "config")
+    if git_exe is not None:
+        for root in {git_exe.parent.parent, git_exe.parent.parent.parent}:
+            candidates += [root / "etc" / "gitconfig", root / "mingw64" / "etc" / "gitconfig"]
+    return {_norm(str(c)) for c in candidates}
+
+
+def config_risk_from_listing(listing: str, trusted_origins: set[str] | None = None) -> str | None:
+    """First program-launching key in ``git config --list --show-scope --show-origin`` output, or None.
+
+    Each line is ``scope<TAB>origin<TAB>key=value``. The listing is produced by git itself for the real working
+    directory, so repository discovery (parent directories, worktrees, gitfile redirects) and includes are resolved
+    by git rather than re-implemented here. A program-launching key is tolerated only when BOTH its scope is not
+    repository-controlled (local/worktree/command) AND its origin file is one of ``trusted_origins`` (e.g. Git for
+    Windows ships ``filter.lfs`` and ``credential.helper`` in its system gitconfig). Origin matters because a global
+    ``include``/``includeIf`` can pull a repository-writable file into global scope. Unknown provenance is risky.
     """
+    trusted = trusted_origins if trusted_origins is not None else set()
     for raw in listing.splitlines():
-        scope, _, entry = raw.partition("	")
-        if not entry:
-            scope, entry = "local", raw                    # no scope column: judge conservatively
-        if scope.strip() not in _UNTRUSTED_SCOPES:
-            continue
+        parts = raw.split(chr(9), 2)
+        if len(parts) == 3:
+            scope, origin, entry = parts
+        else:                                              # no provenance columns: judge conservatively
+            scope, origin, entry = "local", "", raw
         key = entry.split("=", 1)[0].strip()
         if not key:
             continue
-        if key.split(".", 1)[0].casefold() in _RISKY_SECTIONS or _RISKY_KEY.match(key):
+        if not (key.split(".", 1)[0].casefold() in _RISKY_SECTIONS or _RISKY_KEY.match(key)):
+            continue
+        path = origin[5:] if origin.startswith("file:") else ""
+        if scope.strip() in _UNTRUSTED_SCOPES or not path or _norm(path) not in trusted:
             return key
     return None
 

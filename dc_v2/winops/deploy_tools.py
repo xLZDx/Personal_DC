@@ -499,13 +499,11 @@ def _settle(plan: dict[str, Any]) -> None:
         return
     code, installing = meta.get("exit_code"), plan.get("op", "install") == "install"
     present = _product_present(plan)
-    if code is None:                        # lost across a restart: decide from the registry, never guess
-        if installing and present is True:
-            plan["state"] = "installed"
-        elif not installing and present is False:
+    if code is None:                        # lost across a restart: presence proves nothing about WHO installed it
+        if not installing and present is False:
             plan["state"] = "rolled_back"
         else:
-            plan["state"] = "unknown"
+            plan["state"] = "unknown"           # manual reconciliation; never owned, never eligible for automated rollback
     elif installing:
         if code in ELEVATION_CODES:
             plan["state"] = "needs_elevation"
@@ -521,7 +519,7 @@ def _settle(plan: dict[str, Any]) -> None:
     plan["new_software_keys"] = sorted({f'{r["scope"]}:{r["key"]}' for r in _installed()} - before)[:50]
     plan["ended_at"] = iso()
     product = _product_code(plan)
-    if installing and plan["state"] in ("installed", "installed_unconfirmed") and product and any(
+    if installing and code is not None and plan["state"] in ("installed", "installed_unconfirmed") and product and any(
             k.casefold().endswith(":" + product.casefold()) for k in plan["new_software_keys"]):
         _claim_ownership(plan)
     if not installing and plan["state"] == "rolled_back":

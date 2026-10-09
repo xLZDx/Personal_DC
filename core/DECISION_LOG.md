@@ -98,3 +98,10 @@ Durable decisions and evidence only. Newest entries at the bottom. Full per-comm
   namespace validation; ownership provenance fixed at execution time + retired on verified rollback; detached trees held by
   named kernel jobs re-opened after restart; script cache quotas are admission limits.
 * **Verification:** full suite 1440 passed, 4 skipped (agent-run, no CI).
+
+## 2026-10-10 — GPT round 4 remediation (F01 include provenance, F05 versions, F07 unknown outcome, F09 dead-root recovery)
+* **Evidence:** GPT-PM round 4 on 59a60dc = REQUEST_CHANGES (1 BLOCKER, 3 MAJOR; PS01 verified). Detail: commit note, "Round 4 remediation".
+* **Decision:** git config trust = scope AND origin file; EDMX version/namespace pairing; no ownership without an observed exit code;
+  named job is the authority for detached-tree membership at recovery and stop.
+* **Operator question (same day):** "is local admin so long/hard?" - answer: admin is already live (elevated server); the time goes to the GPT security review of the tools.
+* **Verification:** full suite 1454 passed, 4 skipped (agent-run, no CI).

@@ -31,3 +31,16 @@ GPT verification round 3 on 93f86c2 kept F01 (BLOCKER) and F05, F07, F09, PS01 (
 
 Tests: full run 1440 passed, 4 skipped. Note: the test run deletes the tracked file `evidence/phase03/hardening-exit-v4.txt`
 (pre-existing behaviour of an older phase03 test); it is deliberately not staged.
+
+## Round 4 remediation (follow-up commit)
+
+GPT verification round 4 on 59a60dc kept F01 (BLOCKER), F05, F07, F09 (MAJOR) open; PS01 verified.
+
+| Finding | Why it was still open | Change |
+|---|---|---|
+| F01 | A global `include`/`includeIf` pulls a repository-writable file into *global* scope, so scope alone was not a trust signal. | `git config --list --show-scope --show-origin`; a program-launching key is tolerated only if its scope is not local/worktree/command AND its origin file is an exact administrator/user-owned config (`git_policy.trusted_config_origins`: `~/.gitconfig`, `~/.config/git/config`, Git for Windows `etc/gitconfig`, ProgramData). Unknown provenance = risky. Tests: `include` and `includeIf` of a repository file via real git, through `command_execute` and `process_start`; sentinel absent. |
+| F05 | `Version` was only checked for presence. | Version must match the EDMX namespace (`1.0` for the 2007/06 namespace; `4.0`/`4.01` for OData V4) and the EDM generation must match the EDMX generation. |
+| F07 | Presence of the ProductCode after a lost process result was treated as success and ownership. | `exit_code is None` => state `unknown` (manual reconciliation), never owned, never rollback-eligible; ownership requires an observed exit code. |
+| F09 | Named job was only re-opened when the root was still alive. | `ensure_recovered` reconciles the named job also when the root already exited (`_reconcile_job_survivors`); `_stop_orphans` asks the kernel job for membership and calls `TerminateJobObject`, independent of earlier PID sampling. |
+
+Tests: full run 1454 passed, 4 skipped.
