@@ -35,3 +35,6 @@ Durable decisions and evidence only. Newest entries at the bottom. Full per-comm
   ChatGPT visibility are BLOCKED, not PASS. Gates G01-G13 not claimed.
 * **Fixes from first execution:** upload staging dir creation, `-Name` PowerShell parameter, `..` publication name,
   per-user 1C discovery, duplicated `$metadata` in odata_probe URL.
+
+## 2026-10-09 — Final GPT review request prepared
+* GPT is called only at the very end; request file `docs/v2_2/native/GPT_FINAL_REVIEW_REQUEST.md` pins code HEAD 24ffa92.
