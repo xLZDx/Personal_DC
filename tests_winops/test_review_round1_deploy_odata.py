@@ -133,7 +133,8 @@ def _settled(plan_env, **override):
     return plan
 
 
-def test_rollback_refuses_failed_or_unowned_installs(plan_env, monkeypatch):
+def test_rollback_refuses_failed_or_unowned_installs(plan_env, monkeypatch, native_overlay):
+    native_overlay(deny_deletion=False)         # ownership logic is exercised with the operator-lifted no-deletion policy
     monkeypatch.setattr(deploy_tools, "_settle", lambda plan: None)
     failed = _settled(plan_env, state="failed", new_software_keys=[f"HKLM:{PRODUCT}"])
     out = deploy_tools.deployment_rollback(failed["id"])
@@ -145,7 +146,8 @@ def test_rollback_refuses_failed_or_unowned_installs(plan_env, monkeypatch):
     assert plan_env.launches == []
 
 
-def test_rollback_of_an_owned_install_asks_for_approval(plan_env, monkeypatch):
+def test_rollback_of_an_owned_install_asks_for_approval(plan_env, monkeypatch, native_overlay):
+    native_overlay(deny_deletion=False)
     monkeypatch.setattr(deploy_tools, "_settle", lambda plan: None)
     owned = _settled(plan_env, state="installed", new_software_keys=[f"HKLM:{PRODUCT.lower()}"])
     out = deploy_tools.deployment_rollback(owned["id"])
@@ -200,3 +202,10 @@ def test_recovery_and_rollback_apply_the_same_vrd_path_policy_as_repair(tmp_path
         onec_tools._apply_vrd_change(install, step, b"x")
     assert outside.read_bytes() == before
     assert not (isolated_state / "backups").exists() or not list((isolated_state / "backups").iterdir())                  # no backup was created
+
+
+def test_automated_rollback_is_refused_while_the_no_deletion_policy_is_on(plan_env, monkeypatch):
+    monkeypatch.setattr(deploy_tools, "_settle", lambda plan: None)
+    owned = plan_env.make_plan(state="installed", new_software_keys=[f"HKLM:{PRODUCT}"])
+    out = deploy_tools.deployment_rollback(owned["id"])
+    assert out["status"] == "NOT_SUPPORTED" and out["reason"] == "DELETION_NOT_ALLOWED" and plan_env.launches == []

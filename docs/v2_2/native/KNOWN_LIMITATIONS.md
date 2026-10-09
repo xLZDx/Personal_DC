@@ -19,3 +19,15 @@
     ChatGPT. These are recorded BLOCKED (not PASS) in FINAL_VERIFICATION.md. Production gates G01–G13 are not claimed.
 11. **Tests were written but not run during development** (operator policy); the first execution is the final
     verification run.
+
+## Administrator token and "no deletion" (operator decision 2026-10-10)
+The operator chose to run the whole v2 server (supervisor, backend, tunnel) with the administrator token
+(`update_v2_native_autostart.ps1 -Elevated`, one UAC consent by the operator; `-Unelevate` reverts).
+Windows cannot give "admin without delete" at OS level, so "no deletion" is a TOOL-LEVEL policy
+(`dc_v2/winops/deletion_policy.py`, config `deny_deletion`, default true): PowerShell/cmd/exec/process_start text is
+scanned for deletion verbs, destructive utilities, git history destruction and dynamic-code constructs that could hide a
+verb; automated MSI rollback (an uninstall) is refused. It runs before any approval is requested and is audited.
+It is a best-effort text policy, NOT an OS guarantee: an operator-approved interpreter (python/node/...) or installer
+runs arbitrary code and can delete; those stay behind a per-run approval showing the exact parameters. v1 file tools
+still have no delete tool. With an administrator token a compromised server process has far greater impact than
+before; prefer `-Unelevate` when elevated work is not needed.

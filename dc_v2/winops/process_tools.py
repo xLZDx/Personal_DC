@@ -28,6 +28,7 @@ from mcp.types import ToolAnnotations
 from personal_dc.policy import PolicyError
 
 from . import procs
+from .deletion_policy import deny_deletion_argv
 from .common import (ELEVATED, READ_ONLY, WORKSPACE_WRITE, approval_or_response, atomic_write_json, audit,
                      iso, limit, native_config, new_id, read_json, redact, redact_text, safe_path,
                      sha256_text, state_subdir, threaded, valid_id)
@@ -692,6 +693,7 @@ def process_start(executable: str, args: list[str] | None = None, cwd: str = "",
     if not workdir.is_dir():
         raise PolicyError("CWD_NOT_A_DIRECTORY")
     free = True
+    deny_deletion_argv(exe_path.name, args)
     if exe_path.name.casefold() == "git.exe":
         args, free = guard_git_args(args)
     timeout = max(1, min(int(timeout_s), limit("max_process_lifetime_s")))

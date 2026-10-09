@@ -5,7 +5,7 @@
 #   Re-running the updater never snapshots an already-native task, so rollback can never "restore" the new task.
 # - v1 (Personal_DC) is never touched.
 [CmdletBinding()]
-param([switch]$DryRun, [switch]$Rollback, [switch]$Previous)
+param([switch]$DryRun, [switch]$Rollback, [switch]$Previous, [switch]$Elevated, [switch]$Unelevate)
 $ErrorActionPreference = "Stop"
 $Task   = "Personal_DC_V2_Tunnel"
 $Root   = Split-Path -Parent $PSScriptRoot
@@ -34,7 +34,24 @@ if (-not (Test-Path -LiteralPath $script)) { throw "SUPERVISOR_SCRIPT_MISSING" }
 $arg = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $script + '"'
 $action    = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arg -WorkingDirectory $Root
 $trigger   = New-ScheduledTaskTrigger -AtLogOn -User $user
-$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
+# -Elevated: the task (supervisor, backend, tunnel) runs with the administrator token (RunLevel Highest) at logon,
+# without a UAC prompt at run time. Creating that task needs ONE interactive UAC consent from the operator below;
+# the script never bypasses UAC. -Unelevate returns to RunLevel Limited. "No deletion" is enforced by the tools
+# (dc_v2/winops/deletion_policy.py), not by the OS.
+if ($Elevated -and $Unelevate) { throw "CHOOSE_ONE_OF_ELEVATED_OR_UNELEVATE" }
+$wantHighest = [bool]$Elevated
+if (($Elevated -or $Unelevate) -and -not $DryRun) {
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $isAdmin) {
+        Write-Output "UAC_CONSENT_REQUIRED: relaunching elevated; approve the Windows prompt on the workstation."
+        $flag = if ($Elevated) { "-Elevated" } else { "-Unelevate" }
+        $proc = Start-Process -FilePath "powershell.exe" -Verb RunAs -Wait -PassThru -ArgumentList `
+            @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ('"' + $PSCommandPath + '"'), $flag)
+        exit $proc.ExitCode
+    }
+}
+$level = if ($wantHighest) { "Highest" } else { "Limited" }
+$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel $level
 # The supervisor handles its own restarts; the scheduler restart is a second safety net.
 $settings  = New-ScheduledTaskSettingsSet -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
     -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)
@@ -50,6 +67,8 @@ Set-ScheduledTask -TaskName $Task -Action $action -Trigger $trigger -Principal $
 $after = Get-ScheduledTask -TaskName $Task
 if ($after.State -eq "Disabled") { throw "V2_TASK_DISABLED_AFTER_UPDATE" }
 if ($after.Actions.Arguments -notlike "*start_v2_native_supervisor.ps1*") { throw "V2_TASK_ACTION_NOT_APPLIED" }
+if ([string]$after.Principal.RunLevel -ne $level) { throw ("V2_TASK_RUNLEVEL_NOT_APPLIED expected=" + $level + " actual=" + $after.Principal.RunLevel) }
+Write-Output ("RUNLEVEL=" + $after.Principal.RunLevel)
 Write-Output "CUTOVER_NOTE: the running tunnel/backend keep running; the supervisor adopts a verified backend and refuses a busy 18081. Stop the old tunnel before the next logon or the supervisor will wait."
 Write-Output "V2_AUTOSTART_UPDATED_TO_NATIVE_SUPERVISOR"
 Write-Output ("TASK=" + $Task + " USER=" + $user + " BACKUP=task-$Task-$stamp.xml")

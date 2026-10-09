@@ -27,6 +27,7 @@ from personal_dc.policy import PolicyError
 
 from .common import (ELEVATED, READ_ONLY, WORKSPACE_WRITE, audit, bounded, limit, safe_path, state_subdir,
                      threaded)
+from .deletion_policy import deny_deletion, deny_deletion_argv
 from .process_tools import (TERMINAL, Managed, authorize_launch, build_env, get_managed, guard_git_args, launch,
                             launch_params, public_meta, read_output, resolve_exe, stop_managed, system32, wait_done)
 
@@ -182,6 +183,8 @@ def _prepare(shell: str, command: str, argv: list[str] | None, mode: str, env: d
         vector = list(CATALOG[command])
         exe = resolve_exe(vector[0], env)
         return {"exe": exe, "argv": vector[1:], "cmdline": None, "summary": {"catalog": command}, "force": False}
+    if shell in ("powershell", "cmd"):
+        deny_deletion(command, source=shell)
     if shell == "exec":
         vector = list(argv or [])
         if not vector or len(vector) > 100:
@@ -190,6 +193,7 @@ def _prepare(shell: str, command: str, argv: list[str] | None, mode: str, env: d
             raise PolicyError("INVALID_ARGUMENTS")
         exe = resolve_exe(vector[0], env)
         args = vector[1:]
+        deny_deletion_argv(exe.name, args)
         force = False
         if mode == READ_ONLY:
             _validate_readonly_exec(exe, args)

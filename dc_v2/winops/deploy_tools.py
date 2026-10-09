@@ -458,6 +458,11 @@ def deployment_status(plan_id: str) -> dict[str, Any]:
 def deployment_rollback(plan_id: str, approval_id: str | None = None, timeout_s: int = 1800) -> dict[str, Any]:
     """Uninstall what a plan installed (MSI by ProductCode). Refuses products that existed before the plan."""
     plan = _load_plan(plan_id)
+    if native_config().get("deny_deletion", True):
+        audit("deployment.rollback", "DENIED", plan_id=plan_id, reason="DELETION_NOT_ALLOWED")
+        return {"status": "NOT_SUPPORTED", "reason": "DELETION_NOT_ALLOWED",
+                "manual": "An automated uninstall deletes software; the no-deletion policy forbids it. Uninstall manually "
+                          "via Windows Apps & features, or set deny_deletion=false in the local native.json overlay."}
     _settle(plan)
     if plan["state"] not in ("installed", "installed_unconfirmed", "failed"):
         raise PolicyError("ROLLBACK_NOT_APPLICABLE_IN_STATE:" + plan["state"])

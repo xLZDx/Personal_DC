@@ -53,3 +53,10 @@ Durable decisions and evidence only. Newest entries at the bottom. Full per-comm
 * **Decision:** output paging uses a canonical redacted representation (offset semantics change to redacted bytes).
 * **Decision:** OData credentials are endpoint-bound; legacy unbound blobs are refused (operator must re-provision).
 * **Decision:** default process-tree lifetime = root lifetime; detaching is explicit and approval-bound.
+
+## 2026-10-10 — Administrator token for the v2 server, tool-level no-deletion
+* **Decision (operator choice, AskUserQuestion):** run the whole v2 server elevated (RunLevel Highest) instead of a narrow
+  elevated helper. UAC is never bypassed: the operator consents once when running `update_v2_native_autostart.ps1 -Elevated`.
+* **Decision:** "without the right to delete" is enforced by tools (`deletion_policy.py`, `deny_deletion` default true),
+  not by the OS; automated uninstall (deployment_rollback) is refused while the policy is on.
+* **Evidence:** 1342 passed, 4 skipped. Residual risk documented in KNOWN_LIMITATIONS.md.
