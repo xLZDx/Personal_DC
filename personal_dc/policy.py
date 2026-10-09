@@ -5,11 +5,43 @@ import re
 from pathlib import Path
 from typing import Iterable
 
-from .config import policy_config
+from .config import home, policy_config
 
 
 class PolicyError(PermissionError):
     pass
+
+
+# Single shared path-safety implementation: v1 uses it directly, v2 (dc_v2.winops.common.safe_path)
+# layers its own extra checks on top. Do not copy these rules elsewhere.
+_DEVICE_NAME = re.compile(r"^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$", re.IGNORECASE)
+CREDENTIAL_SUFFIXES = {".pem", ".key", ".pfx", ".p12", ".kdbx", ".ppk", ".dpapi", ".tfvars", ".tfstate"}
+BUILTIN_PROTECTED_NAMES = {
+    ".npmrc", ".pypirc", ".netrc", ".git-credentials", "id_ecdsa", "id_dsa", "id_rsa", "id_ed25519",
+}
+
+
+def syntactic_check(raw: str | Path) -> None:
+    """Reject path syntax that reaches the network or hides data BEFORE any filesystem call."""
+    text = str(raw)
+    if not text or "\x00" in text:
+        raise PolicyError("INVALID_PATH")
+    norm = text.replace("/", "\\")
+    if norm.startswith("\\\\"):
+        raise PolicyError("UNC_OR_DEVICE_PATH_NOT_ALLOWED")
+    drive = re.match(r"^[A-Za-z]:", norm)
+    if drive and not norm[2:3] == "\\":
+        raise PolicyError("DRIVE_RELATIVE_PATH_NOT_ALLOWED")
+    rest = norm[2:] if drive else norm
+    if ":" in rest:
+        raise PolicyError("ALTERNATE_DATA_STREAM_NOT_ALLOWED")
+    for part in norm.split("\\"):
+        if not part or part in (".", ".."):
+            continue
+        if part != part.rstrip(" ."):
+            raise PolicyError("TRAILING_DOT_OR_SPACE_NOT_ALLOWED")
+        if _DEVICE_NAME.match(part):
+            raise PolicyError("RESERVED_DEVICE_NAME_NOT_ALLOWED")
 
 
 class Policy:
@@ -17,12 +49,15 @@ class Policy:
         cfg = policy_config()
         self.allowed_roots = [Path(p).expanduser().resolve() for p in cfg["allowed_roots"]]
         self.protected_components = {str(x).casefold() for x in cfg.get("protected_components", [])}
-        self.protected_names = {str(x).casefold() for x in cfg.get("protected_names", [])}
+        self.protected_names = {str(x).casefold() for x in cfg.get("protected_names", [])} | BUILTIN_PROTECTED_NAMES
         self.allowed_executables = {str(x).casefold() for x in cfg.get("allowed_executables", [])}
         self.blocked_command_patterns = [
             re.compile(str(x), re.IGNORECASE)
             for x in cfg.get("blocked_command_patterns", [])
         ]
+        # The gateway's own control files are never writable through the model-facing file tools.
+        base = home()
+        self.write_protected = [(base / "config").resolve(strict=False), (base / "logs").resolve(strict=False)]
 
     @staticmethod
     def _inside(candidate: Path, root: Path) -> bool:
@@ -32,6 +67,7 @@ class Policy:
             return False
 
     def resolve_path(self, raw: str | Path, *, write: bool = False) -> Path:
+        syntactic_check(raw)
         path = Path(raw).expanduser().resolve(strict=False)
         if not any(self._inside(path, root) for root in self.allowed_roots):
             raise PolicyError(f"Path is outside allowed roots: {path}")
@@ -45,8 +81,10 @@ class Policy:
         if name in self.protected_names or name.startswith(".env"):
             raise PolicyError(f"Protected file: {path.name}")
 
-        if write and path.suffix.casefold() in {".pem", ".key", ".pfx", ".p12", ".kdbx"}:
-            raise PolicyError(f"Writing credential material is blocked: {path.suffix}")
+        if path.suffix.casefold() in CREDENTIAL_SUFFIXES:
+            raise PolicyError(f"Credential material is blocked: {path.suffix}")
+        if write and any(self._inside(path, root) for root in self.write_protected):
+            raise PolicyError("GATEWAY_CONTROL_PATH_PROTECTED")
         return path
 
     def validate_command(self, executable: str, args: Iterable[str]) -> tuple[str, list[str]]:

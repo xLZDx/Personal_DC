@@ -18,8 +18,8 @@ import sys
 
 from personal_dc.policy import PolicyError
 
-from .common import (APPROVAL_TTL_DEFAULT_S, approvals_dir, audit, audit_verify, grant_approval,
-                     init_approval_key, iso, read_json, valid_id)
+from .common import (APPROVAL_TTL_DEFAULT_S, approvals_dir, audit, audit_verify, deny_approval, dpapi_protect, grant_approval,
+                     init_approval_key, iso, read_json, secret_path, valid_id)
 
 
 def _requests() -> list[dict]:
@@ -43,6 +43,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("init")
     sub.add_parser("list")
     sub.add_parser("verify-audit")
+    cred = sub.add_parser("set-odata-credential")
+    cred.add_argument("ref")
     for name in ("show", "grant", "deny"):
         p = sub.add_parser(name)
         p.add_argument("approval_id")
@@ -58,6 +60,20 @@ def main(argv: list[str] | None = None) -> int:
                 print(f'{r.get("id")}  {state:8}  {r.get("action")}  {r.get("created_at")}')
         elif args.cmd == "verify-audit":
             print(json.dumps(audit_verify(), indent=2))
+        elif args.cmd == "set-odata-credential":
+            import getpass
+            import re
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", args.ref):
+                raise PolicyError("INVALID_CREDENTIAL_REF")
+            user = input("OData user: ").strip()
+            password = getpass.getpass("OData password: ")
+            if not user or ":" in user or not password:
+                raise PolicyError("INVALID_CREDENTIAL")
+            path = secret_path("odata-" + args.ref)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(dpapi_protect((user + ":" + password).encode("utf-8")))
+            audit("odata.credential", "PROVISIONED", actor="operator-cli", ref=args.ref)
+            print("credential stored (DPAPI, current user)")
         else:
             if not valid_id(args.approval_id) or not args.approval_id.startswith("req-"):
                 raise PolicyError("INVALID_APPROVAL_ID")
@@ -68,15 +84,16 @@ def main(argv: list[str] | None = None) -> int:
             if args.cmd == "show":
                 print(json.dumps(req, indent=2, ensure_ascii=False))
             elif args.cmd == "deny":
-                (base / (args.approval_id + ".denied")).write_text(iso(), encoding="utf-8")
-                (base / (args.approval_id + ".grant.json")).unlink(missing_ok=True)
-                audit("approval.deny", "DENIED", actor="operator-cli", approval_id=args.approval_id)
+                deny_approval(args.approval_id)
                 print("denied")
             else:
-                print(json.dumps(req, indent=2, ensure_ascii=False))
-                answer = input("Type the first 8 chars of the digest to GRANT: ").strip()
-                if answer != req["digest"][:8]:
-                    print("digest prefix mismatch - NOT granted")
+                print(f'ACTION : {req.get("action")}   MODE: {req.get("mode")}')
+                print("PARAMS (exact, what will be executed):")
+                print(req.get("params_display", req.get("summary")))
+                print("DIGEST :", req["digest"])
+                answer = input("Type the LAST 8 chars of the digest to GRANT: ").strip()
+                if answer != req["digest"][-8:]:
+                    print("digest suffix mismatch - NOT granted")
                     return 2
                 if (base / (args.approval_id + ".denied")).exists():
                     raise PolicyError("REQUEST_WAS_DENIED")

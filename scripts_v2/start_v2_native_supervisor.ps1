@@ -27,8 +27,20 @@ $PidFile    = Join-Path $Run "backend.pid"
 New-Item -ItemType Directory -Force -Path $Run, $Logs | Out-Null
 
 function Log([string]$Message) {
-    $file = Join-Path $Logs ("supervisor-" + (Get-Date).ToString("yyyyMMdd") + ".log")
-    Add-Content -LiteralPath $file -Value ("{0} {1}" -f (Get-Date).ToString("o"), $Message) -Encoding UTF8
+    try {   # logging must never take the supervisor down (disk full, locked file)
+        $file = Join-Path $Logs ("supervisor-" + (Get-Date).ToString("yyyyMMdd") + ".log")
+        Add-Content -LiteralPath $file -Value ("{0} {1}" -f (Get-Date).ToString("o"), $Message) -Encoding UTF8
+    } catch { }
+}
+# Bounded authenticated MCP round trip (never hangs the supervisor). Returns the probe exit code, 99 on timeout.
+function Probe-Backend([string]$Key) {
+    $psi = New-Object Diagnostics.ProcessStartInfo
+    $psi.FileName = $Python; $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+    $psi.Arguments = '"' + (Join-Path $PSScriptRoot "probe_native_personal.py") + '"'
+    $psi.EnvironmentVariables["PDC_V2_BACKEND_KEY"] = $Key
+    $proc = [Diagnostics.Process]::Start($psi)
+    if (-not $proc.WaitForExit(30000)) { try { $proc.Kill() } catch { }; return 99 }
+    return $proc.ExitCode
 }
 function Prune-Logs { Get-ChildItem -LiteralPath $Logs -File -ErrorAction SilentlyContinue |
     Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-14) } | Remove-Item -Force -ErrorAction SilentlyContinue }
@@ -64,7 +76,7 @@ function Write-Status([hashtable]$s) {
 
 # --- single instance -------------------------------------------------------
 $created = $false
-$mutex = New-Object System.Threading.Mutex($true, "Local\Personal_DC_V2_Supervisor", [ref]$created)
+$mutex = New-Object System.Threading.Mutex($true, "Global\Personal_DC_V2_Supervisor", [ref]$created)
 if (-not $created) { Log "Another supervisor instance is already running; exiting."; exit 0 }
 Remove-Item -LiteralPath $StopFile -ErrorAction SilentlyContinue
 Log ("Supervisor started pid=" + $PID + " repo=" + $Repo)
@@ -109,9 +121,7 @@ try {
                 Log ("Backend started pid=" + $backend.Id)
             }
             # readiness = a real authenticated MCP round trip, not just an open port
-            $env:PDC_V2_BACKEND_KEY = $backendKey
-            try { & $Python (Join-Path $PSScriptRoot "probe_native_personal.py") | Out-Null; $probe = $LASTEXITCODE }
-            finally { $env:PDC_V2_BACKEND_KEY = $null }
+            $probe = Probe-Backend $backendKey
             if ($probe -ne 0) { throw "Backend readiness probe failed (exit $probe)." }
             Log "Backend ready."
             if ($BackendOnly) { Write-Status @{ state = "backend_only_ready"; backend_pid = $backend.Id }; $backend.WaitForExit(); throw "Backend exited." }
@@ -126,8 +136,8 @@ try {
             try {
                 $tunnel = Start-Process -FilePath $Client -WindowStyle Hidden -PassThru -WorkingDirectory $Repo `
                     -ArgumentList "run", "--profile", "personal-dc-v2", "--profile-dir", $ProfileDir,
-                        "--mcp.extra-headers", "X-PDC-V2-Demo-Auth: env:PDC_V2_BACKEND_KEY",
-                        "--mcp.discovery-extra-headers", "X-PDC-V2-Demo-Auth: env:PDC_V2_BACKEND_KEY",
+                        "--mcp.extra-headers", '"X-PDC-V2-Demo-Auth: env:PDC_V2_BACKEND_KEY"',
+                        "--mcp.discovery-extra-headers", '"X-PDC-V2-Demo-Auth: env:PDC_V2_BACKEND_KEY"',
                         "--log.level", "info" `
                     -RedirectStandardOutput (Join-Path $Logs "tunnel-$stamp.out.log") `
                     -RedirectStandardError  (Join-Path $Logs "tunnel-$stamp.err.log")
@@ -137,7 +147,14 @@ try {
             Log ("Tunnel started pid=" + $tunnel.Id)
             Write-Status @{ state = "running"; backend_pid = $backend.Id; tunnel_pid = $tunnel.Id; restarts = $restarts }
 
+            $nextProbe = (Get-Date).AddSeconds(60); $probeFails = 0
             while (-not (Test-Path -LiteralPath $StopFile)) {
+                if ((Get-Date) -ge $nextProbe) {   # periodic health: a hung backend with an open port is a failure too
+                    $nextProbe = (Get-Date).AddSeconds(60)
+                    if ((Probe-Backend $backendKey) -eq 0) { $probeFails = 0 } else { $probeFails++ }
+                    if ($probeFails -ge 3) { Log "Backend failed 3 consecutive health probes; restarting."; break }
+                    Write-Status @{ state = "running"; backend_pid = $backend.Id; tunnel_pid = $tunnel.Id; restarts = $restarts; probe_failures = $probeFails }
+                }
                 if ($tunnel.HasExited) { Log ("Tunnel exited code=" + $tunnel.ExitCode); break }
                 if ($backend.HasExited) { Log ("Backend exited code=" + $backend.ExitCode); break }
                 Start-Sleep -Seconds 2

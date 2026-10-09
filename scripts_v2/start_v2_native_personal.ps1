@@ -32,7 +32,7 @@ try{
       Start-Sleep -Milliseconds 250
       $up=Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 18766 -State Listen -ErrorAction SilentlyContinue
     }while(-not $up -and -not $proc.HasExited -and (Get-Date) -lt $deadline)
-    if(-not $up){throw "NATIVE_V2_BACKEND_NOT_LISTENING"}
+    if(-not $up){ if(-not $proc.HasExited){Stop-Process -Id $proc.Id -ErrorAction SilentlyContinue}; throw "NATIVE_V2_BACKEND_NOT_LISTENING (see $logErr)" }
     $PidFile=Join-Path $env:LOCALAPPDATA "Personal_DC_V2\run\backend.pid"
     [IO.File]::WriteAllText($PidFile,[string]$proc.Id)
     Write-Output ("V2_NATIVE_WINDOWS_MCP_READY_PID="+$proc.Id)

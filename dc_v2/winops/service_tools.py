@@ -22,7 +22,7 @@ from mcp.types import ToolAnnotations
 from personal_dc.policy import PolicyError
 
 from .common import (ELEVATED, approval_or_response, atomic_write_json, audit, iso, native_config, new_id,
-                     redact_text, state_subdir)
+                     redact_text, state_subdir, threaded)
 from .sysrun import ps_json
 
 _RO = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
@@ -47,7 +47,8 @@ PROTECTED = {n.casefold() for n in (
     "LanmanWorkstation", "TermService", "Schedule", "winmgmt", "PlugPlay", "Power", "ProfSvc", "Netlogon", "KDC",
     "NTDS", "Dnscache", "Dhcp", "nsi", "gpsvc", "SystemEventsBroker", "TimeBrokerSvc", "UserManager", "Winmgmt",
     "wuauserv", "BITS", "UsoSvc", "WaaSMedicSvc", "AppIDSvc", "VaultSvc", "KeyIso", "CertPropSvc", "sshd",
-    "RemoteRegistry", "SNMP", "NlaSvc", "netprofm", "Appinfo", "seclogon", "LmHosts", "SharedAccess", "ShellHWDetection")}
+    "RemoteRegistry", "SNMP", "NlaSvc", "netprofm", "Appinfo", "seclogon", "LmHosts", "SharedAccess", "ShellHWDetection",
+    "WdFilter", "WdBoot", "WdNisDrv", "MsSecFlt", "mpsdrv", "bam", "PcaSvc", "wlidsvc", "Wcmsvc")}
 
 
 class _SSP(ctypes.Structure):
@@ -129,10 +130,15 @@ class _Svc:
                                         ctypes.byref(count))
         if not needed.value:
             return []
-        buf = ctypes.create_string_buffer(needed.value)
-        if not self.adv.EnumDependentServicesW(self.handle, SERVICE_STATE_ALL, buf, needed.value,
+        for _ in range(3):   # the set can grow between the size query and the read (ERROR_MORE_DATA = 234)
+            buf = ctypes.create_string_buffer(needed.value)
+            if self.adv.EnumDependentServicesW(self.handle, SERVICE_STATE_ALL, buf, needed.value,
                                                ctypes.byref(needed), ctypes.byref(count)):
-            return []
+                break
+            if ctypes.get_last_error() != 234:
+                raise PolicyError(f"SCM_ENUM_DEPENDENTS_FAILED:{ctypes.get_last_error()}")
+        else:
+            raise PolicyError("SCM_ENUM_DEPENDENTS_UNSTABLE")
         entries = ctypes.cast(buf, ctypes.POINTER(_ENUM_STATUS))
         out = []
         for i in range(count.value):
@@ -175,7 +181,7 @@ def _protected(name: str) -> bool:
 
 
 _INSPECT_PS = r"""
-$n = $env:PDC_ARG_NAME
+$n = [string]$env:PDC_ARG_NAME
 $w = Get-CimInstance Win32_Service -Filter ("Name='" + $n + "'")
 if (-not $w) { '{"found":false}'; exit 0 }
 $s = Get-Service -Name $n
@@ -187,7 +193,7 @@ $s = Get-Service -Name $n
 """
 
 _LIST_PS = r"""
-$f = $env:PDC_ARG_FILTER; $st = $env:PDC_ARG_STATE
+$f = [string]$env:PDC_ARG_FILTER; $st = [string]$env:PDC_ARG_STATE
 Get-CimInstance Win32_Service | Where-Object {
   ($f -eq '' -or $_.Name -like ('*' + $f + '*') -or $_.DisplayName -like ('*' + $f + '*')) -and
   ($st -eq '' -or $_.State -eq $st)
@@ -234,8 +240,8 @@ def service_inspect(name: str) -> dict[str, Any]:
                           if entry else None)}
 
 
-def _gate(name: str, action: str, approval_id: str | None, pre_approved: bool = False) -> dict[str, Any] | None:
-    """Policy for mutation. Returns an approval response dict, or None when allowed."""
+def _policy(name: str, action: str) -> dict[str, Any]:
+    """Name/denylist/allowlist policy (no approval consumed). Returns the allowlist entry."""
     _check_name(name)
     if _protected(name):
         audit("service." + action, "DENIED", service=name, reason="PROTECTED")
@@ -244,6 +250,14 @@ def _gate(name: str, action: str, approval_id: str | None, pre_approved: bool = 
     if not entry or action not in entry.get("actions", []):
         audit("service." + action, "DENIED", service=name, reason="NOT_ALLOWLISTED")
         raise PolicyError("SERVICE_ACTION_NOT_ALLOWLISTED")
+    return entry
+
+
+def _gate(name: str, action: str, approval_id: str | None, pre_approved: bool = False) -> dict[str, Any] | None:
+    """Policy + existence check, THEN approval. Returns an approval response dict, or None when allowed."""
+    entry = _policy(name, action)
+    with _Svc(name, SERVICE_QUERY_STATUS):   # fails with SERVICE_NOT_FOUND before an approval is consumed
+        pass
     if pre_approved or action in entry.get("approval_free", []):
         return None
     return approval_or_response("service." + action, {"service": name, "action": action}, approval_id, ELEVATED)
@@ -253,7 +267,8 @@ def _rollback(name: str, action: str, prior: str) -> str:
     rid = new_id("svr")
     atomic_write_json(state_subdir("rollback") / (rid + ".json"),
                       {"id": rid, "service": name, "action": action, "prior_state": prior, "at": iso(),
-                       "restore": ("start" if prior == "running" else "stop" if prior == "stopped" else "manual")})
+                       "restore": ("start" if prior == "running" else "stop" if prior == "stopped" else "manual"),
+                       "note": "advisory record; restore only through the allow-listed service tools"})
     return rid
 
 
@@ -270,7 +285,7 @@ def _do_start(name: str, timeout_s: float) -> str:
 def _do_stop(name: str, timeout_s: float) -> str:
     with _Svc(name, SERVICE_STOP | SERVICE_QUERY_STATUS | SERVICE_ENUMERATE_DEPENDENTS) as svc:
         status = svc.status()
-        if status["state"] != "stopped":
+        if status["state"] not in ("stopped", "stop_pending"):
             running = [d for d in svc.dependents() if d["state"] != "stopped"]
             if running:
                 raise PolicyError("SERVICE_HAS_RUNNING_DEPENDENTS:" + ",".join(d["name"] for d in running)[:200])
@@ -303,18 +318,23 @@ def _mutate(name: str, action: str, timeout_s: int, approval_id: str | None,
             final = _do_stop(name, timeout)
             expected = "stopped"
         else:
-            _do_stop(name, timeout)
+            stopped = _do_stop(name, timeout)
+            if stopped != "stopped":
+                raise PolicyError(f"SERVICE_RESTART_STOP_NOT_CONFIRMED:{stopped}")
             final = _do_start(name, timeout)
             expected = "running"
     except PolicyError as exc:
-        with _Svc(name, SERVICE_QUERY_STATUS) as svc:
-            now = svc.status()["state"]
+        try:
+            with _Svc(name, SERVICE_QUERY_STATUS) as svc:
+                now = svc.status()["state"]
+        except PolicyError:
+            now = "unknown"
         audit("service." + action, "ERROR", service=name, reason=str(exc), state_now=now)
         raise
     ok = final == expected
     audit("service." + action, "OK" if ok else "UNCONFIRMED", service=name, final_state=final)
     return {"service": name, "action": action, "prior_state": prior, "final_state": final, "confirmed": ok,
-            "rollback": {"id": rollback_id, "restore_by": ("service_start" if prior == "running" else "service_stop")}}
+            "rollback": {"id": rollback_id, "restore_by": {"running": "service_start", "stopped": "service_stop"}.get(prior, "manual")}}
 
 
 def service_start(name: str, timeout_s: int = 60, approval_id: str | None = None) -> dict[str, Any]:
@@ -348,9 +368,9 @@ def service_current_state(name: str) -> str:
 
 
 def register_service_tools(server: Any) -> None:
-    server.tool(annotations=_RO)(service_list)
-    server.tool(annotations=_RO)(service_inspect)
-    server.tool(annotations=_MUT)(service_start)
-    server.tool(annotations=_MUT)(service_stop)
-    server.tool(annotations=_MUT)(service_restart)
-    server.tool(annotations=_RO)(service_wait)
+    server.tool(annotations=_RO)(threaded(service_list))
+    server.tool(annotations=_RO)(threaded(service_inspect))
+    server.tool(annotations=_MUT)(threaded(service_start))
+    server.tool(annotations=_MUT)(threaded(service_stop))
+    server.tool(annotations=_MUT)(threaded(service_restart))
+    server.tool(annotations=_RO)(threaded(service_wait))

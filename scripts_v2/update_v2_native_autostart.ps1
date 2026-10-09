@@ -24,7 +24,7 @@ if ($Rollback) {
 $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 $script = Join-Path $PSScriptRoot "start_v2_native_supervisor.ps1"
 if (-not (Test-Path -LiteralPath $script)) { throw "SUPERVISOR_SCRIPT_MISSING" }
-$arg = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -File "' + $script + '"'
+$arg = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $script + '"'
 $action    = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arg -WorkingDirectory $Root
 $trigger   = New-ScheduledTaskTrigger -AtLogOn -User $user
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
@@ -33,10 +33,17 @@ $settings  = New-ScheduledTaskSettingsSet -StartWhenAvailable -RestartCount 999 
     -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)
 if ($DryRun) { Write-Output ("WOULD_UPDATE_TASK=" + $Task + " ACTION=powershell.exe " + $arg); exit 0 }
 $stamp = (Get-Date).ToString("yyyyMMddTHHmmss")
-Export-ScheduledTask -TaskName $Task | Set-Content -LiteralPath (Join-Path $Backup "task-$Task-$stamp.xml") -Encoding Unicode
+$xml = Export-ScheduledTask -TaskName $Task
+# The very first export (the pre-v2.2 task) is kept immutably; later exports never replace it.
+$orig = Join-Path $Backup "task-$Task-ORIGINAL.xml"
+if (-not (Test-Path -LiteralPath $orig)) { Set-Content -LiteralPath $orig -Value $xml -Encoding Unicode }
+Set-Content -LiteralPath (Join-Path $Backup "task-$Task-$stamp.xml") -Value $xml -Encoding Unicode
+if ($current.Actions.Arguments -like "*start_v2_native_supervisor.ps1*") { Write-Output "ALREADY_NATIVE_SUPERVISOR (settings refreshed)" }
 Set-ScheduledTask -TaskName $Task -Action $action -Trigger $trigger -Principal $principal -Settings $settings | Out-Null
 $after = Get-ScheduledTask -TaskName $Task
 if ($after.State -eq "Disabled") { throw "V2_TASK_DISABLED_AFTER_UPDATE" }
+if ($after.Actions.Arguments -notlike "*start_v2_native_supervisor.ps1*") { throw "V2_TASK_ACTION_NOT_APPLIED" }
+Write-Output "CUTOVER_NOTE: the running tunnel/backend keep running; the supervisor adopts a verified backend and refuses a busy 18081. Stop the old tunnel before the next logon or the supervisor will wait."
 Write-Output "V2_AUTOSTART_UPDATED_TO_NATIVE_SUPERVISOR"
 Write-Output ("TASK=" + $Task + " USER=" + $user + " BACKUP=task-$Task-$stamp.xml")
 Write-Output "V1_NOT_MODIFIED"

@@ -18,7 +18,7 @@ import hashlib
 import os
 import re
 import shutil
-import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,8 +26,9 @@ from mcp.types import ToolAnnotations
 from personal_dc.policy import PolicyError
 
 from . import process_tools as pt
-from .common import (ELEVATED, approval_or_response, atomic_write_json, audit, digest_of, iso, native_config,
-                     new_id, read_json, redact_text, safe_path, state_subdir, valid_id)
+from .common import (ELEVATED, _is_under, approval_or_response, assert_no_reparse_chain, atomic_write_json, audit,
+                     digest_of, iso, limit, native_config, new_id, read_json, redact_text, safe_path,
+                     state_subdir, threaded, utcnow, valid_id)
 from .sysrun import ps_json
 
 _RO = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
@@ -41,10 +42,12 @@ PROFILES = {
 }
 REBOOT_CODES = {3010, 1641}
 ELEVATION_CODES = {740, 1925, 5}
+_RDN = re.compile(r"(?:^|,\s*)(CN|O)=(\"[^\"]+\"|[^,]+)", re.IGNORECASE)
 _SOFT_KEYS = [
     ("HKLM", r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
     ("HKLM", r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
     ("HKCU", r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ("HKCU", r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
 ]
 
 
@@ -146,8 +149,7 @@ def _installer_path(path: str) -> Path:
     resolved = safe_path(path, extra_roots=native_config()["installer_roots"])
     if not resolved.is_file() or resolved.suffix.casefold() not in INSTALLER_EXT:
         raise PolicyError("INSTALLER_MUST_BE_EXISTING_MSI_OR_EXE")
-    if not any(str(resolved).casefold().startswith(str(Path(r).resolve(strict=False)).casefold())
-               for r in native_config()["installer_roots"]):
+    if not any(_is_under(resolved, Path(r).resolve(strict=False)) for r in native_config()["installer_roots"]):
         raise PolicyError("INSTALLER_OUTSIDE_INSTALLER_ROOTS")
     return resolved
 
@@ -161,8 +163,9 @@ def _trust(sig: dict[str, Any], sha: str) -> tuple[bool, str]:
     thumbs = {t.replace(" ", "").upper() for t in cfg["trusted_thumbprints"]}
     if (sig.get("thumbprint") or "").upper() in thumbs:
         return True, "TRUSTED_THUMBPRINT"
-    subject = (sig.get("subject") or "").casefold()
-    if any(p.casefold() in subject for p in cfg["trusted_publishers"] if p):
+    names = {m.group(2).strip('"').casefold() for m in _RDN.finditer(sig.get("subject") or "")}
+    # exact CN/O equality (no substring), and configured entries must be specific enough to mean something
+    if any(len(p) >= 4 and p.casefold() in names for p in cfg["trusted_publishers"] if p):
         return True, "TRUSTED_PUBLISHER"
     return False, "PUBLISHER_NOT_TRUSTED"
 
@@ -219,6 +222,11 @@ def _install_dir(install_dir: str) -> str:
         raise PolicyError("INSTALL_DIR_OUTSIDE_APPROVED_ROOTS")
     if re.search(r'["&|<>^%]', str(resolved)):
         raise PolicyError("INSTALL_DIR_INVALID")
+    for prefix in native_config()["protected_write_prefixes"]:
+        if _is_under(resolved, Path(prefix)):
+            raise PolicyError("INSTALL_DIR_PROTECTED_LOCATION")
+    assert_no_reparse_chain(Path(os.path.abspath(install_dir)), roots)
+    assert_no_reparse_chain(resolved, roots)
     return str(resolved)
 
 
@@ -237,12 +245,15 @@ def deployment_plan(installer_path: str, expected_sha256: str, profile: str = "m
         raise PolicyError("PROFILE_DOES_NOT_MATCH_INSTALLER_TYPE")
     target = _install_dir(install_dir)
     before = [r for r in _installed()]
+    code = (verified.get("msi") or {}).get("product_code") or ""
     plan_id = new_id("dpl")
     plan = {"id": plan_id, "created_at": iso(), "state": "planned", "installer": str(installer),
             "sha256": verified["sha256"], "profile": profile, "install_dir": target,
             "msi": verified.get("msi") or {}, "signature": {k: verified["signature"].get(k) for k in
                                                            ("status", "subject", "thumbprint")},
-            "inventory_before": sorted(r["key"] for r in before)[:3000], "log": None, "history": []}
+            "inventory_before": sorted(f'{r["scope"]}:{r["key"]}' for r in before),
+            "product_preexisting": bool(code and any(r["key"].casefold() == code.casefold() for r in before)),
+            "log": None, "history": []}
     plan["digest"] = digest_of("deployment.apply", _bound(plan))
     _save_plan(plan)
     audit("deployment.plan", "PLANNED", plan_id=plan_id, installer=str(installer), profile=profile)
@@ -254,7 +265,10 @@ def deployment_plan(installer_path: str, expected_sha256: str, profile: str = "m
 
 def _bound(plan: dict[str, Any]) -> dict[str, Any]:
     return {"plan": plan["id"], "installer": plan["installer"], "sha256": plan["sha256"],
-            "profile": plan["profile"], "install_dir": plan["install_dir"]}
+            "profile": plan["profile"], "install_dir": plan["install_dir"],
+            "signer": (plan.get("signature") or {}).get("subject"),
+            "thumbprint": (plan.get("signature") or {}).get("thumbprint"),
+            "product_code": (plan.get("msi") or {}).get("product_code")}
 
 
 def _argv_for(plan: dict[str, Any], staged: Path, log: Path, uninstall: bool = False) -> tuple[Path, list[str]]:
@@ -279,33 +293,62 @@ def _argv_for(plan: dict[str, Any], staged: Path, log: Path, uninstall: bool = F
     return staged, args
 
 
-def deployment_apply(plan_id: str, approval_id: str | None = None, timeout_s: int = 1800) -> dict[str, Any]:
-    """Run an approved plan: stage + re-hash the installer, execute as a managed process, record outcome."""
+def _check_plan_fresh(plan: dict[str, Any]) -> None:
+    age = (utcnow() - datetime.fromisoformat(plan["created_at"])).total_seconds()
+    if age > limit("plan_max_age_s"):
+        raise PolicyError("PLAN_EXPIRED_CREATE_A_NEW_PLAN")
+
+
+def deployment_apply(plan_id: str, approval_id: str | None = None, timeout_s: int = 3600) -> dict[str, Any]:
+    """Run an approved plan: re-verify trust, stage + re-hash the installer, execute as a managed process."""
     plan = _load_plan(plan_id)
-    if plan["state"] not in ("planned", "failed"):
+    if plan["state"] not in ("planned", "failed", "needs_elevation"):
         raise PolicyError("PLAN_NOT_APPLICABLE_IN_STATE:" + plan["state"])
+    _check_plan_fresh(plan)
     if digest_of("deployment.apply", _bound(plan)) != plan["digest"]:
         audit("deployment.apply", "DENIED", plan_id=plan_id, reason="PLAN_TAMPERED")
         raise PolicyError("PLAN_DIGEST_MISMATCH")
+    source = _installer_path(plan["installer"])
+    if _sha256_file(source) != plan["sha256"]:
+        raise PolicyError("INSTALLER_CHANGED_SINCE_PLAN")
+    # trust is re-evaluated NOW, not only at plan time
+    sig = ps_json(_SIG_PS, {"path": str(source)}, timeout=60) or {}
+    trusted, why = _trust(sig, plan["sha256"])
+    if not trusted or sig.get("thumbprint") != plan["signature"].get("thumbprint"):
+        audit("deployment.apply", "DENIED", plan_id=plan_id, reason="TRUST_CHANGED:" + why)
+        raise PolicyError("INSTALLER_TRUST_CHANGED:" + why)
+    if plan["install_dir"]:
+        _install_dir(plan["install_dir"])   # re-validate (roots, protected prefixes, reparse points) at apply time
     pending = approval_or_response("deployment.apply", _bound(plan), approval_id, ELEVATED)
     if pending:
         return pending
-    source = Path(plan["installer"])
-    if not source.is_file() or _sha256_file(source) != plan["sha256"]:
-        raise PolicyError("INSTALLER_CHANGED_SINCE_PLAN")
+    plan.update(state="applying", op="install", applying_at=iso(), reboot_pending_before=_reboot_pending())
+    plan["history"].append({"at": iso(), "event": "applying"})
+    _save_plan(plan)                        # persisted BEFORE the installer can run
     stage_dir = state_subdir("staging") / plan_id
     stage_dir.mkdir(parents=True, exist_ok=True)
     staged = stage_dir / source.name
     shutil.copy2(source, staged)
     if _sha256_file(staged) != plan["sha256"]:
+        plan.update(state="failed")
+        _save_plan(plan)
         raise PolicyError("STAGED_COPY_HASH_MISMATCH")
     log = stage_dir / "install.log"
     exe, args = _argv_for(plan, staged, log)
-    env = pt.build_env()
-    managed = pt.launch(kind="deployment", label="install:" + plan_id, argv=args, cmdline=None, exe_path=exe,
-                        cwd=stage_dir, env=env, timeout_s=max(60, min(int(timeout_s), 7200)), mode=ELEVATED,
-                        approval_id=approval_id, summary={"plan": plan_id, "profile": plan["profile"],
-                                                          "exe": exe.name}, kill_orphans=False)
+    try:
+        managed = pt.launch(kind="deployment", label="install:" + plan_id, argv=args, cmdline=None, exe_path=exe,
+                            cwd=stage_dir, env=pt.build_env(), timeout_s=max(60, min(int(timeout_s), 7200)),
+                            mode=ELEVATED, approval_id=approval_id,
+                            summary={"plan": plan_id, "profile": plan["profile"], "exe": exe.name},
+                            kill_orphans=False)
+    except PolicyError as exc:
+        # WinError 740 = the installer manifest demands elevation; the server never elevates.
+        plan["state"] = "needs_elevation" if ":740" in str(exc) else "failed"
+        plan["history"].append({"at": iso(), "event": plan["state"], "reason": str(exc)[:120]})
+        _save_plan(plan)
+        audit("deployment.apply", plan["state"].upper(), plan_id=plan_id, reason=str(exc)[:120])
+        return {"plan_id": plan_id, "state": plan["state"], "reason": str(exc)[:120],
+                "note": "approval was consumed; request a new approval after fixing the cause"}
     plan.update(state="running", process_id=managed.meta["id"], log=str(log), started_at=iso())
     plan["history"].append({"at": iso(), "event": "apply_started", "process_id": managed.meta["id"]})
     _save_plan(plan)
@@ -314,45 +357,93 @@ def deployment_apply(plan_id: str, approval_id: str | None = None, timeout_s: in
             "next": "poll deployment_status(plan_id)"}
 
 
+def _product_present(plan: dict[str, Any]) -> bool | None:
+    code = (plan.get("msi") or {}).get("product_code")
+    if not code:
+        return None
+    return any(r["key"].casefold() == code.casefold() for r in _installed())
+
+
+def _log_tail(plan: dict[str, Any]) -> str:
+    path = Path(plan["log"]) if plan.get("log") else None
+    if not path or not path.is_file():
+        return ""
+    with path.open("rb") as handle:
+        head = handle.read(2)
+        size = path.stat().st_size
+        handle.seek(max(0, size - 4000) & ~1)
+        raw = handle.read()
+    text = raw.decode("utf-16-le", errors="ignore") if head == b"\xff\xfe" else raw.decode("utf-8", errors="replace")
+    return redact_text(text)[-1500:]
+
+
+def _settle(plan: dict[str, Any]) -> None:
+    """Move a running install/rollback to its final state once its process has ended."""
+    if plan["state"] not in ("running", "applying", "rolling_back"):
+        return
+    pid = plan.get("process_id")
+    try:
+        managed = pt.get_managed(pid) if pid else None
+    except PolicyError:
+        managed = None
+    if managed is None:
+        plan["state"] = "unknown"           # never guess: needs operator review
+        plan["history"].append({"at": iso(), "event": "unknown", "reason": "process record missing"})
+        _save_plan(plan)
+        return
+    meta = managed.meta
+    if meta["state"] not in pt.TERMINAL:
+        return
+    code, installing = meta.get("exit_code"), plan.get("op", "install") == "install"
+    present = _product_present(plan)
+    if code is None:                        # lost across a restart: decide from the registry, never guess
+        if installing and present is True:
+            plan["state"] = "installed"
+        elif not installing and present is False:
+            plan["state"] = "rolled_back"
+        else:
+            plan["state"] = "unknown"
+    elif installing:
+        if code in ELEVATION_CODES:
+            plan["state"] = "needs_elevation"
+        elif code == 0 or code in REBOOT_CODES:
+            plan["state"] = "installed" if present is not False else "installed_unconfirmed"
+        else:
+            plan["state"] = "failed"
+    else:
+        plan["state"] = "rolled_back" if code in (0, 1605, *REBOOT_CODES) else "rollback_failed"
+    plan["exit_code"] = code
+    plan["reboot_required"] = code in REBOOT_CODES or (_reboot_pending() and not plan.get("reboot_pending_before"))
+    before = set(plan["inventory_before"])
+    plan["new_software_keys"] = sorted({f'{r["scope"]}:{r["key"]}' for r in _installed()} - before)[:50]
+    plan["ended_at"] = iso()
+    plan["history"].append({"at": iso(), "event": plan["state"], "exit_code": code})
+    _save_plan(plan)
+    audit("deployment.end", plan["state"], plan_id=plan["id"], exit_code=code)
+
+
 def deployment_status(plan_id: str) -> dict[str, Any]:
-    """Status of a deployment: process outcome, reboot requirement, detected new software entries."""
+    """Status of a deployment. Reconciles a finished process into a final state (installed/failed/unknown...)."""
     plan = _load_plan(plan_id)
-    if plan["state"] == "running" and plan.get("process_id"):
-        managed = pt.get_managed(plan["process_id"])
-        meta = managed.meta
-        if meta["state"] in pt.TERMINAL:
-            code = meta.get("exit_code")
-            if meta["state"] == "exited" and code in (0, *REBOOT_CODES):
-                plan["state"] = "installed"
-            elif code in ELEVATION_CODES:
-                plan["state"] = "needs_elevation"
-            else:
-                plan["state"] = "failed"
-            plan["exit_code"] = code
-            plan["reboot_required"] = code in REBOOT_CODES or _reboot_pending()
-            after = {r["key"] for r in _installed()}
-            plan["new_software_keys"] = sorted(after - set(plan["inventory_before"]))[:50]
-            plan["ended_at"] = iso()
-            plan["history"].append({"at": iso(), "event": plan["state"], "exit_code": code})
-            _save_plan(plan)
-            audit("deployment.end", plan["state"], plan_id=plan_id, exit_code=code)
-    log_tail = ""
-    if plan.get("log") and Path(plan["log"]).is_file():
-        raw = Path(plan["log"]).read_bytes()[-4000:]
-        log_tail = redact_text((raw.decode("utf-16-le", errors="ignore") if raw[:2] == b"\xff\xfe"
-                                else raw.decode("utf-8", errors="replace")))[-1500:]
-    return {k: plan.get(k) for k in ("id", "state", "profile", "installer", "sha256", "exit_code",
-                                     "reboot_required", "new_software_keys", "started_at", "ended_at",
-                                     "history")} | {"log_tail": log_tail}
+    _settle(plan)
+    return {k: plan.get(k) for k in ("id", "state", "op", "profile", "installer", "sha256", "exit_code",
+                                     "reboot_required", "new_software_keys", "product_preexisting", "started_at",
+                                     "ended_at", "history")} | {"log_tail": _log_tail(plan)}
 
 
 def deployment_rollback(plan_id: str, approval_id: str | None = None, timeout_s: int = 1800) -> dict[str, Any]:
-    """Uninstall what a plan installed (MSI by ProductCode). Other profiles report NOT_SUPPORTED."""
+    """Uninstall what a plan installed (MSI by ProductCode). Refuses products that existed before the plan."""
     plan = _load_plan(plan_id)
-    if plan["state"] not in ("installed", "failed"):
+    _settle(plan)
+    if plan["state"] not in ("installed", "installed_unconfirmed", "failed"):
         raise PolicyError("ROLLBACK_NOT_APPLICABLE_IN_STATE:" + plan["state"])
+    if digest_of("deployment.apply", _bound(plan)) != plan["digest"]:
+        raise PolicyError("PLAN_DIGEST_MISMATCH")
+    if plan.get("product_preexisting"):
+        return {"status": "NOT_SUPPORTED", "reason": "PRODUCT_EXISTED_BEFORE_THIS_PLAN",
+                "manual": "This plan upgraded or repaired an existing product; uninstalling would remove the working one."}
     bound = {"plan": plan_id, "rollback": True, "product": (plan.get("msi") or {}).get("product_code"),
-             "profile": plan["profile"]}
+             "profile": plan["profile"], "digest": plan["digest"]}
     try:
         _argv_for(plan, Path("."), Path("."), uninstall=True)
     except PolicyError as exc:
@@ -365,25 +456,32 @@ def deployment_rollback(plan_id: str, approval_id: str | None = None, timeout_s:
     stage_dir.mkdir(parents=True, exist_ok=True)
     log = stage_dir / "uninstall.log"
     exe, args = _argv_for(plan, Path("."), log, uninstall=True)
-    managed = pt.launch(kind="deployment", label="rollback:" + plan_id, argv=args, cmdline=None, exe_path=exe,
-                        cwd=stage_dir, env=pt.build_env(), timeout_s=max(60, min(int(timeout_s), 7200)),
-                        mode=ELEVATED, approval_id=approval_id, summary={"plan": plan_id, "rollback": True},
-                        kill_orphans=False)
-    pt.wait_done(managed, max(60, min(int(timeout_s), 7200)))
-    code = managed.meta.get("exit_code")
-    plan["state"] = "rolled_back" if code in (0, *REBOOT_CODES) else "rollback_failed"
-    plan["history"].append({"at": iso(), "event": plan["state"], "exit_code": code})
-    plan["reboot_required"] = code in REBOOT_CODES or _reboot_pending()
+    plan.update(state="rolling_back", op="rollback", log=str(log))
+    plan["history"].append({"at": iso(), "event": "rolling_back"})
     _save_plan(plan)
-    audit("deployment.rollback", plan["state"], plan_id=plan_id, exit_code=code)
-    return {"plan_id": plan_id, "state": plan["state"], "exit_code": code,
-            "reboot_required": plan["reboot_required"]}
+    try:
+        managed = pt.launch(kind="deployment", label="rollback:" + plan_id, argv=args, cmdline=None, exe_path=exe,
+                            cwd=stage_dir, env=pt.build_env(), timeout_s=max(60, min(int(timeout_s), 7200)),
+                            mode=ELEVATED, approval_id=approval_id, summary={"plan": plan_id, "rollback": True},
+                            kill_orphans=False)
+    except PolicyError as exc:
+        plan["state"] = "rollback_failed"
+        plan["history"].append({"at": iso(), "event": "rollback_failed", "reason": str(exc)[:120]})
+        _save_plan(plan)
+        raise
+    plan["process_id"] = managed.meta["id"]
+    _save_plan(plan)
+    pt.wait_done(managed, 10)
+    _settle(plan)
+    return {"plan_id": plan_id, "state": plan["state"], "exit_code": plan.get("exit_code"),
+            "reboot_required": plan.get("reboot_required"),
+            "next": "poll deployment_status(plan_id) if still rolling_back"}
 
 
 def register_deploy_tools(server: Any) -> None:
-    server.tool(annotations=_RO)(software_inspect)
-    server.tool(annotations=_RO)(installer_verify)
-    server.tool(annotations=_MUT)(deployment_plan)
-    server.tool(annotations=_MUT)(deployment_apply)
-    server.tool(annotations=_RO)(deployment_status)
-    server.tool(annotations=_MUT)(deployment_rollback)
+    server.tool(annotations=_RO)(threaded(software_inspect))
+    server.tool(annotations=_RO)(threaded(installer_verify))
+    server.tool(annotations=_MUT)(threaded(deployment_plan))
+    server.tool(annotations=_MUT)(threaded(deployment_apply))
+    server.tool(annotations=_MUT)(threaded(deployment_status))   # reconciles and persists plan state: not read-only
+    server.tool(annotations=_MUT)(threaded(deployment_rollback))

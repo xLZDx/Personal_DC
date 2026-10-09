@@ -23,11 +23,13 @@ from .showcase_mcp import LocalHopGuard
 from .windows_native_tools import register_native_tools
 from .binary_transfer import register_binary_tools
 from .winops.registry import register_all
+from .winops.v1_gate import apply_v1_gate
 
 # Registered only in the separate v2 process, never in legacy v1.
 register_native_tools(native_tools)
 register_binary_tools(native_tools)
 register_all(native_tools)
+apply_v1_gate(native_tools)
 
 
 def create_native_app(secret: str) -> LocalHopGuard:
@@ -42,7 +44,7 @@ def main() -> None:
 
     if os.name != "nt":
         raise SystemExit("WINDOWS_ONLY_NATIVE_PROFILE")
-    secret = os.environ.get("PDC_V2_BACKEND_KEY", "")
+    secret = os.environ.pop("PDC_V2_BACKEND_KEY", "")   # not inherited by managed children
     if len(secret) != 64:
         raise SystemExit("V2_LOCAL_HOP_CREDENTIAL_REQUIRED")
     # No inherited control-plane credentials should reach this backend.

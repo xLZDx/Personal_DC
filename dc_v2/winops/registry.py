@@ -7,6 +7,7 @@ from typing import Any
 from mcp.types import ToolAnnotations
 
 from . import common
+from .common import redact, redact_text, threaded
 from .command_tools import register_command_tools
 from .deploy_tools import register_deploy_tools
 from .onec_tools import register_onec_tools
@@ -33,18 +34,21 @@ def native_security_status() -> dict[str, Any]:
         "trust_modes": list(common.MODES),
         "approval_key_provisioned": common.secret_path("approval-key").is_file(),
         "audit": common.audit_verify(),
-        "service_allowlist": [e.get("name") for e in cfg["service_allowlist"] if isinstance(e, dict)],
-        "dev_executables": cfg["dev_executables"],
+        "service_allowlist": [redact_text(str(e.get("name"))) for e in cfg["service_allowlist"]
+                              if isinstance(e, dict)],
+        "dev_executables": [redact_text(str(x)) for x in cfg["dev_executables"]],
+        "approval_authority_isolated": False,
         "trusted_publishers_configured": bool(cfg["trusted_publishers"] or cfg["trusted_thumbprints"]),
         "elevated_server_process": _is_admin(),
         "note": ("MCP front door is NOT user authorization; elevated actions require an operator approval "
-                 "granted out-of-band (python -m dc_v2.winops.approve)."),
+                 "granted out-of-band (python -m dc_v2.winops.approve). The approval key is held by the same "
+                 "Windows user as this server, so approval is a deliberate-intent control, not a privilege boundary."),
     }
 
 
 def native_audit_tail(limit: int = 50) -> list[dict[str, Any]]:
     """Recent hash-chained native audit events (secrets redacted at write time)."""
-    return common.audit_tail(limit)
+    return redact(common.audit_tail(max(1, min(int(limit), 500))))
 
 
 def _is_admin() -> bool:
@@ -63,5 +67,5 @@ def register_all(server: Any) -> None:
     register_service_tools(server)
     register_onec_tools(server)
     register_deploy_tools(server)
-    server.tool(annotations=_RO)(native_security_status)
-    server.tool(annotations=_RO)(native_audit_tail)
+    server.tool(annotations=_RO)(threaded(native_security_status))
+    server.tool(annotations=_RO)(threaded(native_audit_tail))

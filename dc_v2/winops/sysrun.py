@@ -51,7 +51,8 @@ def run_capture(argv: list[str], timeout: int = 30, env: dict[str, str] | None =
                                     os.environ.get("SystemRoot", r"C:\Windows"), "System32"),
                                 creationflags=subprocess.CREATE_NO_WINDOW)
     except OSError as exc:
-        return {"exit_code": None, "error": type(exc).__name__, "stdout": "", "stderr": "", "timed_out": False}
+        return {"exit_code": None, "error": type(exc).__name__, "launch_error": True, "stdout": "",
+                "stderr": "", "timed_out": False}
     created = procs.creation_time(proc.pid)
     timed_out = False
     try:
@@ -61,7 +62,10 @@ def run_capture(argv: list[str], timeout: int = 30, env: dict[str, str] | None =
         if created:
             procs.terminate_tree(proc.pid, created)
         proc.kill()
-        out, err = proc.communicate()
+        try:
+            out, err = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:   # a surviving grandchild still holds the pipes
+            out, err = b"", b""
     return {"exit_code": proc.returncode, "timed_out": timed_out,
             "stdout": out[:MAX_BYTES].decode("utf-8", errors="replace"),
             "stderr": err[:20000].decode("utf-8", errors="replace"),
@@ -74,7 +78,8 @@ def run_ps(script: str, args: dict[str, str] | None = None, timeout: int = 30) -
     encoded = base64.b64encode((_PRELUDE + script).encode("utf-16-le")).decode("ascii")
     ps = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "WindowsPowerShell", "v1.0",
                       "powershell.exe")
-    return run_capture([ps, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+    return run_capture([ps, "-NoLogo", "-NoProfile", "-NonInteractive", "-OutputFormat", "Text",
+                        "-EncodedCommand", encoded],
                        timeout=timeout, env=env)
 
 

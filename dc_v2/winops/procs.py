@@ -23,6 +23,7 @@ JobObjectBasicProcessIdList = 3
 JobObjectExtendedLimitInformation = 9
 JOB_OBJECT_LIMIT_PROCESS_MEMORY = 0x100
 JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 0x8
+JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 CREATE_SUSPENDED = 0x4
 
 
@@ -64,7 +65,7 @@ class _EXT_LIMIT(ctypes.Structure):
 def _k32() -> Any:
     if os.name != "nt":
         raise PolicyError("WINDOWS_ONLY")
-    k = ctypes.windll.kernel32
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
     k.OpenProcess.restype = wintypes.HANDLE
     k.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
     k.CreateJobObjectW.restype = wintypes.HANDLE
@@ -225,9 +226,14 @@ def terminate_tree(root_pid: int, root_created: int) -> list[int]:
 
 
 class Job:
-    """A Windows Job Object used to track and terminate a launched process tree."""
+    """A Windows Job Object used to track and terminate a launched process tree.
 
-    def __init__(self, memory_limit_bytes: int | None = None, max_active: int | None = None) -> None:
+    ``kill_on_close`` ties the whole tree to the server's lifetime (commands); long-running
+    managed processes are created without it so they can survive a server restart.
+    """
+
+    def __init__(self, memory_limit_bytes: int | None = None, max_active: int | None = None,
+                 kill_on_close: bool = False) -> None:
         k = k32()
         self.handle = k.CreateJobObjectW(None, None)
         if not self.handle:
@@ -239,18 +245,26 @@ class Job:
         if max_active:
             flags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS
             info.BasicLimitInformation.ActiveProcessLimit = int(max_active)
+        if kill_on_close:
+            flags |= JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         if flags:
             info.BasicLimitInformation.LimitFlags = flags
-            k.SetInformationJobObject(self.handle, JobObjectExtendedLimitInformation,
-                                      ctypes.byref(info), ctypes.sizeof(info))
+            if not k.SetInformationJobObject(self.handle, JobObjectExtendedLimitInformation,
+                                             ctypes.byref(info), ctypes.sizeof(info)):
+                k.CloseHandle(self.handle)
+                self.handle = None
+                raise PolicyError("JOB_LIMITS_NOT_APPLIED")
 
     def assign(self, process_handle: int) -> bool:
         return bool(k32().AssignProcessToJobObject(self.handle, process_handle))
 
     def terminate(self, exit_code: int = 1) -> bool:
-        return bool(k32().TerminateJobObject(self.handle, exit_code))
+        handle = self.handle
+        return bool(handle) and bool(k32().TerminateJobObject(handle, exit_code))
 
     def pids(self) -> list[int]:
+        if not self.handle:
+            return []
         class _LIST(ctypes.Structure):
             _fields_ = [("NumberOfAssignedProcesses", wintypes.DWORD),
                         ("NumberOfProcessIdsInList", wintypes.DWORD),
@@ -262,9 +276,9 @@ class Job:
         return [int(info.ProcessIdList[i]) for i in range(info.NumberOfProcessIdsInList)]
 
     def close(self) -> None:
-        if self.handle:
-            k32().CloseHandle(self.handle)
-            self.handle = None
+        handle, self.handle = self.handle, None
+        if handle:
+            k32().CloseHandle(handle)
 
 
 def resume_process(process_handle: int) -> None:
