@@ -17,6 +17,10 @@ from mcp.server.fastmcp import FastMCP
 from personal_dc.server import mcp as native_tools
 
 from .showcase_mcp import LocalHopGuard
+from .windows_native_tools import register_native_tools
+
+# Registered only in the separate v2 process, never in legacy v1.
+register_native_tools(native_tools)
 
 
 def create_native_app(secret: str) -> LocalHopGuard:
