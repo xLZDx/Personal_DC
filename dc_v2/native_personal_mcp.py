@@ -1,9 +1,12 @@
 """Native Personal DC v2 entrypoint for the owner's Windows workstation.
 
 Restores the already-tested v1 Windows file/Git/test tools behind v2's
-independent local-hop authenticated tunnel. Not the Docker executor. This
-entrypoint intentionally does NOT expose generic host shell, arbitrary
-PowerShell, delete, service control, or tunnel key manipulation.
+independent local-hop authenticated tunnel, plus the native Windows operations
+layer (dc_v2.winops): managed processes, PowerShell/CMD execution, service
+control, Apache/1C/OData, installers. Not the Docker executor. Privileged
+actions are fail-closed: they require a trust mode and, for anything beyond
+allow-listed development tools, an operator approval granted out-of-band.
+There is still no delete tool and no tunnel key manipulation.
 
 The model-facing tools still use personal_dc.policy.Policy allowlisted roots.
 See deployment limitations: current-user process identity is not a secure
@@ -19,10 +22,12 @@ from personal_dc.server import mcp as native_tools
 from .showcase_mcp import LocalHopGuard
 from .windows_native_tools import register_native_tools
 from .binary_transfer import register_binary_tools
+from .winops.registry import register_all
 
 # Registered only in the separate v2 process, never in legacy v1.
 register_native_tools(native_tools)
 register_binary_tools(native_tools)
+register_all(native_tools)
 
 
 def create_native_app(secret: str) -> LocalHopGuard:

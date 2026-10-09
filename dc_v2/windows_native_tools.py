@@ -102,4 +102,5 @@ def register_native_tools(server: Any) -> None:
     """Register native tools exclusively in the v2 entrypoint process."""
     server.tool(annotations=_READ_ONLY)(system_diagnostics)
     server.tool(annotations=_READ_ONLY)(service_status)
-    server.tool(annotations=_READ_ONLY)(command_execute)
+    # command_execute is now provided by dc_v2.winops.command_tools (superset, same alias catalog);
+    # the function above remains for direct callers and the legacy unit tests.
