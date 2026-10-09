@@ -44,3 +44,15 @@ GPT verification round 4 on 59a60dc kept F01 (BLOCKER), F05, F07, F09 (MAJOR) op
 | F09 | Named job was only re-opened when the root was still alive. | `ensure_recovered` reconciles the named job also when the root already exited (`_reconcile_job_survivors`); `_stop_orphans` asks the kernel job for membership and calls `TerminateJobObject`, independent of earlier PID sampling. |
 
 Tests: full run 1454 passed, 4 skipped.
+
+## Round 5 remediation (follow-up commit)
+
+GPT verification round 5 on db1567b: F05 and F07 verified; F01 (BLOCKER) and F09 (MAJOR) open.
+
+| Finding | Change |
+|---|---|
+| F01 | `core.worktree` is a risky key; `process_tools._git_containment_risk` additionally runs `git rev-parse --show-toplevel --absolute-git-dir` and requires the work tree inside the allowed roots (`safe_path`) and the git dir to be exactly `<toplevel>/.git` (separate git dirs / linked worktrees need approval; unknown => not free). Tests: `core.worktree` outside the roots and `git init --separate-git-dir` outside the roots, via `command_execute` and `process_start`; nothing staged. |
+| F09 (a) | `Job.pids()` grows its buffer on `ERROR_MORE_DATA`/short lists and exposes `query_ok`, so a failed query is not "empty". `_stop_orphans` calls `TerminateJobObject` regardless of enumeration, waits until members are dead and marks `containment=job_termination_unverified` otherwise. Test: 270 members, dead root, empty orphan list; an unrelated process survives. |
+| F09 (b) — found while testing | **A named job's name disappears when its last handle closes**, even while members run, so round 4's "re-open by name after a restart" only worked while some handle was still open (the earlier tests masked this by keeping the creating handle). New `winops/job_holder.py`: a tiny detached process holds one extra handle, outlives the server and exits when the job had members and is empty again (120 s grace if none ever joined). `Job(..., hosted=True)` starts it and opens the job with full access; detached launches use it and fail closed (`JOB_HOLDER_NOT_READY`) if it cannot start. Tests close every creator handle before recovery. |
+
+Tests: full run 1457 passed, 4 skipped.

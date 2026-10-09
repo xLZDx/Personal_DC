@@ -1,6 +1,7 @@
 """GPT review round 2: F01 (git trust boundary), F05 (EDMX), F09 (descendants), ND01 (git deletion), PS01 (scripts)."""
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import threading
@@ -114,6 +115,60 @@ def test_filter_in_a_parent_repo_is_found_from_a_nested_directory_and_never_runs
     via_start = pt.process_start("git.exe", ["add", "f.txt"], cwd=str(nested), mode="workspace_write")
     assert via_start["status"] == "APPROVAL_REQUIRED"
     assert not sentinel.exists()
+
+
+def test_core_worktree_pointing_outside_allowed_roots_is_never_free(repo, tmp_path):
+    private = tmp_path / "private"                       # outside the allowed root (tmp_path/work)
+    private.mkdir()
+    (private / "private.txt").write_text("secret\n", encoding="utf-8")
+    config = repo / ".git" / "config"
+    config.write_text(config.read_text(encoding="utf-8") + f"[core]\n\tworktree = {private.as_posix()}\n", encoding="utf-8")
+    for args in (["add", "-A"], ["status"], ["show", ":private.txt"], ["ls-files"]):
+        assert pt.guard_git_args(args, repo)[1] is False, args
+    via_exec = ct.command_execute("", shell="exec", argv=["git.exe", "add", "-A"], cwd=str(repo), mode="workspace_write")
+    assert via_exec["status"] == "APPROVAL_REQUIRED"
+    via_start = pt.process_start("git.exe", ["add", "-A"], cwd=str(repo), mode="workspace_write")
+    assert via_start["status"] == "APPROVAL_REQUIRED"
+    listed = subprocess.run(["git", "ls-files", "--cached"], cwd=repo, capture_output=True, text=True,
+                            env={**os.environ, "GIT_WORK_TREE": str(repo)})
+    assert "private.txt" not in listed.stdout            # nothing was staged from outside the roots
+
+
+def test_gitdir_redirected_outside_allowed_roots_is_never_free(work, tmp_path):
+    outside = tmp_path / "elsewhere" / "gd"
+    outside.parent.mkdir()
+    redirected = work / "r2"
+    redirected.mkdir()
+    subprocess.run(["git", "init", "-q", f"--separate-git-dir={outside}", str(redirected)], check=True, capture_output=True)
+    assert (redirected / ".git").is_file()
+    assert pt.guard_git_args(["status"], redirected)[1] is False
+
+
+def test_core_worktree_pointing_outside_allowed_roots_is_never_free(repo, tmp_path):
+    private = tmp_path / "private"                       # outside the allowed root (tmp_path/work)
+    private.mkdir()
+    (private / "private.txt").write_text("secret\n", encoding="utf-8")
+    config = repo / ".git" / "config"
+    config.write_text(config.read_text(encoding="utf-8") + f"[core]\n\tworktree = {private.as_posix()}\n", encoding="utf-8")
+    for args in (["add", "-A"], ["status"], ["show", ":private.txt"], ["ls-files"]):
+        assert pt.guard_git_args(args, repo)[1] is False, args
+    via_exec = ct.command_execute("", shell="exec", argv=["git.exe", "add", "-A"], cwd=str(repo), mode="workspace_write")
+    assert via_exec["status"] == "APPROVAL_REQUIRED"
+    via_start = pt.process_start("git.exe", ["add", "-A"], cwd=str(repo), mode="workspace_write")
+    assert via_start["status"] == "APPROVAL_REQUIRED"
+    listed = subprocess.run(["git", "ls-files", "--cached"], cwd=repo, capture_output=True, text=True,
+                            env={**os.environ, "GIT_WORK_TREE": str(repo)})
+    assert "private.txt" not in listed.stdout            # nothing was staged from outside the roots
+
+
+def test_gitdir_redirected_outside_allowed_roots_is_never_free(work, tmp_path):
+    outside = tmp_path / "elsewhere" / "gd"
+    outside.parent.mkdir()
+    redirected = work / "r2"
+    redirected.mkdir()
+    subprocess.run(["git", "init", "-q", f"--separate-git-dir={outside}", str(redirected)], check=True, capture_output=True)
+    assert (redirected / ".git").is_file()
+    assert pt.guard_git_args(["status"], redirected)[1] is False
 
 
 def test_unreadable_git_config_means_not_free(tmp_path, monkeypatch):

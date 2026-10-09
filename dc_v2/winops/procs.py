@@ -7,7 +7,11 @@ from __future__ import annotations
 
 import ctypes
 import os
+import subprocess
+import sys
+import threading
 from ctypes import wintypes
+from pathlib import Path
 from typing import Any
 
 from personal_dc.policy import PolicyError
@@ -227,6 +231,26 @@ def terminate_tree(root_pid: int, root_created: int) -> list[int]:
     return killed
 
 
+ERROR_MORE_DATA = 234
+JOB_OBJECT_ALL_ACCESS = 0x1F001F
+HOLDER_SCRIPT = Path(__file__).with_name("job_holder.py")
+
+
+def _start_holder(name: str) -> None:
+    """Start the detached holder and wait until it reports that the named job exists."""
+    proc = subprocess.Popen([sys.executable, "-S", "-I", str(HOLDER_SCRIPT), name], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, shell=False,
+                            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP)
+    line: list[str] = []
+    reader = threading.Thread(target=lambda: line.append(proc.stdout.readline().decode("ascii", "replace").strip()),
+                              daemon=True)
+    reader.start()
+    reader.join(15)
+    if not line or line[0] != "ready":
+        with __import__("contextlib").suppress(Exception):
+            proc.kill()
+        raise PolicyError("JOB_HOLDER_NOT_READY")
+    proc.stdout.close()                                  # the holder never writes again; it ends when the job is empty
 JOB_OBJECT_QUERY = 0x0004
 JOB_OBJECT_TERMINATE = 0x0008
 
@@ -239,10 +263,19 @@ class Job:
     """
 
     def __init__(self, memory_limit_bytes: int | None = None, max_active: int | None = None,
-                 kill_on_close: bool = False, name: str | None = None) -> None:
+                 kill_on_close: bool = False, name: str | None = None, hosted: bool = False) -> None:
+        """``hosted``: a separate holder process owns a handle to the named job, so the name (and therefore
+        re-opening, membership and termination) survives the death of THIS process."""
         k = k32()
         self.name = name
-        self.handle = k.CreateJobObjectW(None, name)
+        self.query_ok = True
+        if hosted:
+            if not name or kill_on_close:
+                raise PolicyError("JOB_HOST_REQUIRES_NAME_AND_NO_KILL_ON_CLOSE")
+            _start_holder(name)
+            self.handle = k.OpenJobObjectW(JOB_OBJECT_ALL_ACCESS, False, name)
+        else:
+            self.handle = k.CreateJobObjectW(None, name)
         if not self.handle:
             raise PolicyError("JOB_CREATE_FAILED")
         flags, info = 0, _EXT_LIMIT()
@@ -283,17 +316,31 @@ class Job:
         return bool(handle) and bool(k32().TerminateJobObject(handle, exit_code))
 
     def pids(self) -> list[int]:
+        """Member process ids; the buffer grows until the list is complete (ERROR_MORE_DATA is not "empty").
+
+        ``self.query_ok`` is False when the kernel query itself failed, so callers can tell that from an empty job.
+        """
+        self.query_ok = True
         if not self.handle:
             return []
-        class _LIST(ctypes.Structure):
-            _fields_ = [("NumberOfAssignedProcesses", wintypes.DWORD),
-                        ("NumberOfProcessIdsInList", wintypes.DWORD),
-                        ("ProcessIdList", ctypes.c_size_t * 256)]
-        info = _LIST()
-        if not k32().QueryInformationJobObject(self.handle, JobObjectBasicProcessIdList,
-                                               ctypes.byref(info), ctypes.sizeof(info), None):
-            return []
-        return [int(info.ProcessIdList[i]) for i in range(info.NumberOfProcessIdsInList)]
+        capacity = 256
+        for _ in range(12):
+            class _LIST(ctypes.Structure):
+                _fields_ = [("NumberOfAssignedProcesses", wintypes.DWORD),
+                            ("NumberOfProcessIdsInList", wintypes.DWORD),
+                            ("ProcessIdList", ctypes.c_size_t * capacity)]
+            info = _LIST()
+            ok = k32().QueryInformationJobObject(self.handle, JobObjectBasicProcessIdList,
+                                                 ctypes.byref(info), ctypes.sizeof(info), None)
+            error = 0 if ok else ctypes.get_last_error()
+            if not ok and error != ERROR_MORE_DATA:
+                self.query_ok = False
+                return []
+            if ok and info.NumberOfAssignedProcesses <= info.NumberOfProcessIdsInList:
+                return [int(info.ProcessIdList[i]) for i in range(info.NumberOfProcessIdsInList)]
+            capacity = max(capacity * 2, int(info.NumberOfAssignedProcesses) + 64)
+        self.query_ok = False                       # still incomplete after repeated growth
+        return []
 
     def close(self) -> None:
         handle, self.handle = self.handle, None

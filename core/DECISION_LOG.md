@@ -105,3 +105,11 @@ Durable decisions and evidence only. Newest entries at the bottom. Full per-comm
   named job is the authority for detached-tree membership at recovery and stop.
 * **Operator question (same day):** "is local admin so long/hard?" - answer: admin is already live (elevated server); the time goes to the GPT security review of the tools.
 * **Verification:** full suite 1454 passed, 4 skipped (agent-run, no CI).
+
+## 2026-10-10 — GPT round 5 remediation (F01 core.worktree/gitdir containment, F09 >256 members + job holder)
+* **Evidence:** GPT-PM round 5 on db1567b = REQUEST_CHANGES (F01 BLOCKER, F09 MAJOR; F05/F07 verified). While writing the 270-member test
+  I measured that a named Job Object loses its name when the last handle closes (member processes keep it alive but unreachable),
+  which invalidated round 4's restart-recovery premise (earlier tests kept a handle open).
+* **Decision:** free git requires work tree + git dir inside allowed roots (core.worktree risky); Job.pids grows its buffer and
+  termination is independent of enumeration; detached jobs are hosted by `job_holder.py` so the name survives a server crash.
+* **Verification:** full suite 1457 passed, 4 skipped (agent-run, no CI).

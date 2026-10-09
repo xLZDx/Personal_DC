@@ -565,7 +565,7 @@ def _dead_root_with_job_survivor(isolated_state, work, rid, state):
     root_created = procs.creation_time(root.pid)
     root.wait(10)
     name = "Local\\pdc-job-" + rid
-    job = procs.Job(name=name)
+    job = procs.Job(name=name, hosted=True)
     child = subprocess.Popen([PY, "-c", "import time;time.sleep(120)"], stdin=subprocess.DEVNULL,
                              creationflags=subprocess.CREATE_NO_WINDOW)
     assert _wait(lambda: procs.creation_time(child.pid), 10)
@@ -603,3 +603,38 @@ def test_stop_of_a_terminal_record_uses_job_membership_not_only_recorded_pids(is
     finally:
         job.close()
         child.kill()
+
+
+def test_job_with_more_than_256_members_is_fully_enumerated_and_terminated(isolated_state, work):
+    rid = "prc-9999999999999997"
+    ping = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "PING.EXE")
+    root = subprocess.Popen([PY, "-c", "pass"], stdin=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+    root_created = procs.creation_time(root.pid)
+    root.wait(10)
+    name = "Local\\pdc-job-" + rid
+    job = procs.Job(name=name, hosted=True)
+    foreign = _foreign_process()                                           # unrelated: must survive
+    members = []
+    try:
+        for _ in range(270):
+            member = subprocess.Popen([ping, "-n", "120", "127.0.0.1"], stdin=subprocess.DEVNULL,
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                      creationflags=subprocess.CREATE_NO_WINDOW)
+            members.append(member)
+            assert job.assign(int(member._handle))
+        listed = job.pids()
+        assert job.query_ok and len(listed) >= 270                         # buffer grew past 256 instead of returning []
+        _write_record(isolated_state, rid, work, state="running", exe=PY, pid=root.pid, created=root_created, job_name=name)
+        job.close()
+        pt._RECOVERED = False
+        pt.ensure_recovered()                                              # dead parent, empty orphan list, 270 members
+        meta = _disk_meta(isolated_state / "procs" / rid)
+        assert meta["state"] == "exited_unknown" and len(meta["orphans"]) >= 270
+        result = pt.process_stop(rid)
+        assert len(result["orphans_stopped"]) >= 270
+        assert _wait(lambda: all(m.poll() is not None for m in members), 30)
+        assert foreign.poll() is None
+    finally:
+        for member in members:
+            member.kill()
+        foreign.kill()

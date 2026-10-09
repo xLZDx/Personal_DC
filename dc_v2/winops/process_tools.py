@@ -159,7 +159,27 @@ def git_config_risk(cwd: Path) -> str | None:
         return "GIT_CONFIG_UNAVAILABLE"
     if done.returncode != 0:
         return "GIT_CONFIG_UNREADABLE"
-    return config_risk_from_listing(done.stdout.decode("utf-8", errors="replace"), trusted_config_origins(env, exe))
+    risky = config_risk_from_listing(done.stdout.decode("utf-8", errors="replace"), trusted_config_origins(env, exe))
+    return risky or _git_containment_risk(exe, cwd, env)
+
+
+def _git_containment_risk(exe: Path, cwd: Path, env: dict[str, str]) -> str | None:
+    """Free git may only touch a work tree and git dir that lie inside the allowed roots (core.worktree, gitfile
+    redirects and similar can point elsewhere). Uncertain containment fails closed."""
+    try:
+        done = subprocess.run([str(exe), "rev-parse", "--show-toplevel", "--absolute-git-dir"], cwd=str(cwd), env=env,
+                              stdin=subprocess.DEVNULL, capture_output=True, timeout=10, check=False,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        lines = done.stdout.decode("utf-8", errors="replace").splitlines()
+        if done.returncode != 0 or len(lines) != 2:
+            return "GIT_CONTAINMENT_UNKNOWN"
+        toplevel = safe_path(lines[0].strip())    # raises when outside the allowed roots / protected locations
+        gitdir = Path(lines[1].strip())
+        if os.path.normcase(os.path.normpath(str(gitdir))) != os.path.normcase(os.path.normpath(str(toplevel / ".git"))):
+            return "GIT_DIR_NOT_INSIDE_WORKTREE"   # separate git dirs / linked worktrees: not provably contained
+    except (OSError, subprocess.SubprocessError, PolicyError):
+        return "GIT_WORKTREE_OUTSIDE_ALLOWED_ROOTS"
+    return None
 
 
 def guard_git_args(args: list[str], cwd: Path | None = None) -> tuple[list[str], bool]:
@@ -285,7 +305,8 @@ def _launch(*, kind: str, label: str, argv: list[str] | None, cmdline: str | Non
     try:
         job_name = None if kill_orphans else "Local\pdc-job-" + pid_id      # detached trees stay reachable after a restart
         job = procs.Job(memory_limit_bytes=(memory_limit_mb or 0) * 1024 * 1024 or None,
-                        max_active=64 if kill_orphans else None, kill_on_close=kill_orphans, name=job_name)
+                        max_active=64 if kill_orphans else None, kill_on_close=kill_orphans, name=job_name,
+                        hosted=job_name is not None)
         meta["job_name"] = job_name
         flags = (subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP | procs.CREATE_SUSPENDED)
         args: Any = cmdline if cmdline is not None else [str(exe_path), *(argv or [])]
@@ -600,12 +621,17 @@ def _stop_orphans(managed: Managed) -> list[int]:
             members = [p for p in job.pids() if p != managed.meta.get("pid")]
             if members:
                 _record_descendants(managed, members)
-                identities = [(o["pid"], o["created"]) for o in managed.meta.get("orphans") or [] if o["pid"] in members]
-                job.terminate()
-                deadline = time.monotonic() + 5
-                while time.monotonic() < deadline and any(procs.is_alive(p, c) for p, c in identities):
-                    time.sleep(0.1)
-                stopped.extend(p for p, c in identities if not procs.is_alive(p, c))
+            identities = [(o["pid"], o["created"]) for o in managed.meta.get("orphans") or [] if o["pid"] in members]
+            # terminate regardless of whether enumeration worked or found anything: the job holds only our tree
+            terminated = job.terminate()
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and (any(procs.is_alive(p, c) for p, c in identities) or (
+                    terminated and job.pids())):
+                time.sleep(0.1)
+            stopped.extend(p for p, c in identities if not procs.is_alive(p, c))
+            leftover = job.pids()
+            if leftover or not job.query_ok:
+                managed.meta["containment"] = "job_termination_unverified"
         finally:
             job.close()
     for item in managed.meta.get("orphans") or []:
