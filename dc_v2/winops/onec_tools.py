@@ -113,7 +113,11 @@ def _tcp_check(host: str, port: int, timeout: float = 3.0) -> dict[str, Any]:
 # ------------------------------------------------------------ discovery: 1C
 def discover_onec() -> dict[str, Any]:
     found = []
-    for root in native_config()["onec_roots"]:
+    roots = list(native_config()["onec_roots"])
+    local = os.environ.get("LOCALAPPDATA")
+    if local and (Path(local) / "Programs").is_dir():      # per-user installs (1cv8, 1cv8_x64, ...)
+        roots += [str(p) for p in sorted((Path(local) / "Programs").glob("1cv8*")) if p.is_dir()]
+    for root in roots:
         base = Path(root)
         if not base.is_dir():
             continue
@@ -547,6 +551,8 @@ def _odata_url(publication: str, url: str, path: str, server_root: str, with_cre
         install = _pick_apache(server_root)
         endpoint = next((e for e in map(_listen_endpoint, _collect_conf(install)["listen"]) if e), ("127.0.0.1", 80))
         base = f"http://{endpoint[0]}:{endpoint[1]}/{urllib.parse.quote(publication)}{ODATA_PREFIX}"
+    if path and base.rstrip("/").endswith("/" + path.lstrip("/")):
+        return base                                   # the caller's URL already names the target
     if path:
         quoted = urllib.parse.quote(path, safe="/$=?&',()%")      # Cyrillic entity names must be percent-encoded
         full = base + "/" + quoted.lstrip("/")

@@ -221,8 +221,8 @@ def _foreign_process():
     return proc
 
 
-def _write_record(state, rid, work, **override):
-    directory = state / "procs" / rid
+def _write_record(sdir, rid, work, **override):
+    directory = sdir / "procs" / rid
     directory.mkdir(parents=True)
     meta = {"id": rid, "kind": "process", "label": "recorded", "state": "running", "mode": "workspace_write",
             "exe": "C:\\x\\recorded.exe", "summary": {}, "cwd": str(work), "owner": procs.current_user(),

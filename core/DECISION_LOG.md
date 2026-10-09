@@ -28,3 +28,10 @@ Durable decisions and evidence only. Newest entries at the bottom. Full per-comm
   `approval_authority_isolated=false`, documented in KNOWN_LIMITATIONS.md. Not a privilege boundary.
 * **Evidence status:** still UNKNOWN until the single final verification run; gates G01–G13 not claimed.
 * **Detail:** `docs/v2_2/commit-notes/2026-10-09-remediation.md`.
+
+## 2026-10-09 — Final verification run
+* **Evidence (FACT):** 1231 passed, 4 skipped, 0 failed across tests_phase02/03, tests, tests_v2, tests_winops; live in-process
+  checks listed in `docs/v2_2/native/FINAL_VERIFICATION.md`. Apache/real installer/service mutation/approval round trip/
+  ChatGPT visibility are BLOCKED, not PASS. Gates G01-G13 not claimed.
+* **Fixes from first execution:** upload staging dir creation, `-Name` PowerShell parameter, `..` publication name,
+  per-user 1C discovery, duplicated `$metadata` in odata_probe URL.

@@ -9,8 +9,14 @@ from personal_dc.policy import PolicyError
 from dc_v2 import binary_transfer as b
 
 
+def _stage(monkeypatch, tmp_path):
+    staging = tmp_path / "staging"
+    staging.mkdir(exist_ok=True)
+    monkeypatch.setattr(b, "_root", lambda: staging)
+
+
 def test_chunked_roundtrip_and_sha256(monkeypatch, tmp_path):
-    monkeypatch.setattr(b, "_ROOT", tmp_path / "staging")
+    _stage(monkeypatch, tmp_path)
     destination = tmp_path / "fixture.zip"
     monkeypatch.setattr(b, "_target", lambda path: Path(path))
     raw = b"PK" + bytes(range(256)) * 600
@@ -30,7 +36,7 @@ def test_chunked_roundtrip_and_sha256(monkeypatch, tmp_path):
 
 
 def test_integrity_mismatch_refuses_publish(monkeypatch, tmp_path):
-    monkeypatch.setattr(b, "_ROOT", tmp_path / "staging")
+    _stage(monkeypatch, tmp_path)
     monkeypatch.setattr(b, "_target", lambda path: Path(path))
     dest = tmp_path / "bad.zip"
     u = b.binary_upload_begin(str(dest), 3, "0"*64)["upload_id"]
@@ -41,7 +47,7 @@ def test_integrity_mismatch_refuses_publish(monkeypatch, tmp_path):
 
 
 def test_invalid_chunk_and_offset(monkeypatch, tmp_path):
-    monkeypatch.setattr(b, "_ROOT", tmp_path / "staging")
+    _stage(monkeypatch, tmp_path)
     monkeypatch.setattr(b, "_target", lambda path: Path(path))
     u = b.binary_upload_begin(str(tmp_path / "x.zip"), 10, hashlib.sha256(b"x"*10).hexdigest())["upload_id"]
     with pytest.raises(PolicyError, match="INVALID_BASE64"):
@@ -62,7 +68,7 @@ def test_path_and_size_fail_closed():
 
 
 def test_existing_destination_not_overwritten(monkeypatch, tmp_path):
-    monkeypatch.setattr(b, "_ROOT", tmp_path / "staging")
+    _stage(monkeypatch, tmp_path)
     monkeypatch.setattr(b, "_target", lambda path: Path(path))
     dest = tmp_path / "x.zip"
     dest.write_bytes(b"original")

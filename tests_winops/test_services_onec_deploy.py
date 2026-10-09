@@ -851,7 +851,7 @@ def test_odata_probe_reports_auth_challenge(odata_server):
     (b"<a>" + b" " * 70000 + b"<!DOCTYPE x></a>", "XML_DTD_NOT_ALLOWED"),
     ("<a/>".encode("utf-16"), "XML_ENCODING_NOT_ALLOWED"),
     (b"<a><b></a>", "XML_INVALID"),
-])
+], ids=["entity", "late-doctype", "utf16", "malformed"])
 def test_odata_probe_refuses_hostile_metadata(odata_server, body, error):
     odata_server.routes[odata_server.path("$metadata")] = (200, {"Content-Type": "application/xml"}, body)
     assert onec_tools.odata_probe(url=odata_server.base)["metadata"] == {"error": error}
