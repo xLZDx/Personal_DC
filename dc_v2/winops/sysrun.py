@@ -6,16 +6,19 @@ Caller data reaches PowerShell only through environment variables
 """
 from __future__ import annotations
 
-import base64
+import contextlib
+import hashlib
 import json
 import os
 import subprocess
 import time
+from pathlib import Path
 from typing import Any
 
 from personal_dc.policy import PolicyError
 
 from . import procs
+from .common import atomic_write_bytes, state_subdir
 
 MAX_BYTES = 400000
 _PRELUDE = ("$ProgressPreference='SilentlyContinue';$ErrorActionPreference='Stop';"
@@ -72,15 +75,40 @@ def run_capture(argv: list[str], timeout: int = 30, env: dict[str, str] | None =
             "duration_s": round(time.monotonic() - started, 3)}
 
 
+SCRIPT_KEEP_DAYS = 7
+
+
+def script_file(text: str) -> Path:
+    """Persist a PowerShell script as a content-addressed ``.ps1`` (UTF-8 with BOM) and return its path.
+
+    Running a file avoids ``-EncodedCommand`` blobs, which behavioural antivirus engines treat as a malware
+    signature. The name is the SHA-256 of the content, so identical text maps to the same read-only file and the
+    approval digest (which binds the script text) also binds the file that runs.
+    """
+    folder = state_subdir("scripts")
+    body = b"\xef\xbb\xbf" + text.encode("utf-8")
+    path = folder / (hashlib.sha256(body).hexdigest()[:40] + ".ps1")
+    if not path.exists() or path.read_bytes() != body:
+        atomic_write_bytes(path, body)
+    cutoff = time.time() - SCRIPT_KEEP_DAYS * 86400
+    for old in folder.glob("*.ps1"):       # server-owned staging files only; best-effort housekeeping
+        with contextlib.suppress(OSError):
+            if old != path and old.stat().st_mtime < cutoff:
+                old.unlink()
+    return path
+
+
+def ps_file_args(path: Path) -> list[str]:
+    """Argument vector that runs a script file: RemoteSigned (local files) instead of Bypass."""
+    return ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned", "-File", str(path)]
+
+
 def run_ps(script: str, args: dict[str, str] | None = None, timeout: int = 30) -> dict[str, Any]:
     """Run a fixed PowerShell script. ``args`` become ``$env:PDC_ARG_<NAME>``."""
     env = {"PDC_ARG_" + k.upper(): v for k, v in (args or {}).items()}
-    encoded = base64.b64encode((_PRELUDE + script).encode("utf-16-le")).decode("ascii")
     ps = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "WindowsPowerShell", "v1.0",
                       "powershell.exe")
-    return run_capture([ps, "-NoLogo", "-NoProfile", "-NonInteractive", "-OutputFormat", "Text",
-                        "-EncodedCommand", encoded],
-                       timeout=timeout, env=env)
+    return run_capture([ps, *ps_file_args(script_file(_PRELUDE + script))], timeout=timeout, env=env)
 
 
 def ps_json(script: str, args: dict[str, str] | None = None, timeout: int = 30) -> Any:

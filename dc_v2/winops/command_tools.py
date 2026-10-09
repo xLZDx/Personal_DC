@@ -14,7 +14,6 @@ Security model (structure, not keyword blacklists):
 """
 from __future__ import annotations
 
-import base64
 import contextlib
 import json
 import re
@@ -28,6 +27,7 @@ from personal_dc.policy import PolicyError
 from .common import (ELEVATED, READ_ONLY, WORKSPACE_WRITE, audit, bounded, limit, safe_path, state_subdir,
                      threaded)
 from .deletion_policy import deny_deletion, deny_deletion_argv
+from .sysrun import ps_file_args, script_file
 from .process_tools import (TERMINAL, Managed, authorize_launch, build_env, get_managed, guard_git_args, launch,
                             launch_params, public_meta, read_output, resolve_exe, stop_managed, system32, wait_done)
 
@@ -152,8 +152,14 @@ def _check_cim_class(tokens: list[tuple[str, str]]) -> None:
         raise PolicyError("READONLY_CIM_CLASS_NOT_ALLOWED")
 
 
-def encode_powershell(script: str) -> str:
-    return base64.b64encode((_PS_PRELUDE + script + _PS_EPILOGUE).encode("utf-16-le")).decode("ascii")
+def powershell_script_text(script: str) -> str:
+    """The exact file content that runs (prelude + caller script + exit-code epilogue)."""
+    return _PS_PRELUDE + script + _PS_EPILOGUE
+
+
+def powershell_file_args(script: str) -> list[str]:
+    """Persist the script as a content-addressed .ps1 and return the -File argument vector (no encoded blobs)."""
+    return ps_file_args(script_file(powershell_script_text(script)))
 
 
 def _validate_readonly_exec(exe: Path, args: list[str]) -> None:
@@ -208,7 +214,7 @@ def _prepare(shell: str, command: str, argv: list[str] | None, mode: str, env: d
             raise PolicyError("INVALID_SCRIPT")
         script = validate_readonly_powershell(command) if mode == READ_ONLY else command
         exe = resolve_exe("powershell.exe", env)
-        base = ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encode_powershell(script)]
+        base = powershell_file_args(script)
         return {"exe": exe, "argv": base, "cmdline": None, "summary": {"powershell": script},
                 "force": mode != READ_ONLY}
     if shell == "cmd":

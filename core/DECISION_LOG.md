@@ -66,3 +66,11 @@ Durable decisions and evidence only. Newest entries at the bottom. Full per-comm
   `native_security_status` reports `elevated_server_process: True`; live `Remove-Item` via command_execute returned
   `DELETION_NOT_ALLOWED:DELETION_VERB:Remove-Item` while a read-only `Get-Service` command still works.
 * **Rollback:** `update_v2_native_autostart.ps1 -Unelevate` (Limited) or `-Rollback` (immutable ORIGINAL xml).
+
+## 2026-10-10 — PowerShell launched from files, not -EncodedCommand (Norton IDP.HELU.PSE94)
+* **Evidence:** Norton behavioural protection blocked powershell.exe ("Command line detection") around the supervisor restart;
+  services stayed up. Likely triggers: -EncodedCommand base64 blobs, -ExecutionPolicy Bypass, hidden window (inference).
+* **Decision:** `sysrun.script_file` writes a content-addressed read-only-by-convention `.ps1` (UTF-8 BOM, SHA-256 name) under
+  `state/scripts` and every server PowerShell runs `-ExecutionPolicy RemoteSigned -File`. The approval digest still binds the
+  script text (same text -> same file). Scheduled task action also uses RemoteSigned. 1342 passed, 4 skipped.
+* **Limit:** Norton's rules are unknown; no guarantee. Exclusions must be added by the operator on folders, not on powershell.exe.

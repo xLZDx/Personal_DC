@@ -104,11 +104,17 @@ def test_readonly_powershell_name_parameter_is_not_confused_with_namespace(scrip
     assert ct.validate_readonly_powershell(script) == script
 
 
-def test_powershell_script_is_sent_encoded_never_interpolated():
-    encoded = ct.encode_powershell("Get-Date")
-    import base64
-    decoded = base64.b64decode(encoded).decode("utf-16-le")
-    assert "Get-Date" in decoded and decoded.startswith("$ProgressPreference")
+def test_powershell_script_runs_from_a_content_addressed_file_never_encoded_or_interpolated(isolated_state):
+    args = ct.powershell_file_args("Get-Date")
+    assert "-EncodedCommand" not in args and "-Command" not in args and "Bypass" not in args
+    assert args[args.index("-ExecutionPolicy") + 1] == "RemoteSigned" and args[-2] == "-File"
+    path = Path(args[-1])
+    raw = path.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf") and "Get-Date" in raw.decode("utf-8-sig")
+    assert raw.decode("utf-8-sig").startswith("$ProgressPreference")
+    assert path.parent == isolated_state / "scripts" and ct.powershell_file_args("Get-Date")[-1] == str(path)
+    other = Path(ct.powershell_file_args("Get-Date; 1")[-1])
+    assert other != path                                              # different text -> different file
 
 
 # ---------------------------------------------------- read-only executables

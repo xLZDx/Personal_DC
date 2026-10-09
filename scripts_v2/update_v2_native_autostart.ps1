@@ -31,7 +31,7 @@ if ($Rollback) {
 $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 $script = Join-Path $PSScriptRoot "start_v2_native_supervisor.ps1"
 if (-not (Test-Path -LiteralPath $script)) { throw "SUPERVISOR_SCRIPT_MISSING" }
-$arg = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $script + '"'
+$arg = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -WindowStyle Hidden -File "' + $script + '"'
 $action    = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arg -WorkingDirectory $Root
 $trigger   = New-ScheduledTaskTrigger -AtLogOn -User $user
 # -Elevated: the task (supervisor, backend, tunnel) runs with the administrator token (RunLevel Highest) at logon,
@@ -46,7 +46,7 @@ if (($Elevated -or $Unelevate) -and -not $DryRun) {
         Write-Output "UAC_CONSENT_REQUIRED: relaunching elevated; approve the Windows prompt on the workstation."
         $flag = if ($Elevated) { "-Elevated" } else { "-Unelevate" }
         $proc = Start-Process -FilePath "powershell.exe" -Verb RunAs -Wait -PassThru -ArgumentList `
-            @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ('"' + $PSCommandPath + '"'), $flag)
+            @("-NoProfile", "-ExecutionPolicy", "RemoteSigned", "-File", ('"' + $PSCommandPath + '"'), $flag)
         exit $proc.ExitCode
     }
 }
