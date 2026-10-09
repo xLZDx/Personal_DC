@@ -38,3 +38,10 @@ Durable decisions and evidence only. Newest entries at the bottom. Full per-comm
 
 ## 2026-10-09 — Final GPT review request prepared
 * GPT is called only at the very end; request file `docs/v2_2/native/GPT_FINAL_REVIEW_REQUEST.md` pins code HEAD 24ffa92.
+
+## 2026-10-09 — Live deployment of the native supervisor
+* **Decision (operator "разворачивай"):** task `Personal_DC_V2_Tunnel` updated to `start_v2_native_supervisor.ps1` (original XML kept as
+  `task-Personal_DC_V2_Tunnel-ORIGINAL.xml`); orphan old backend (pid 54988) and tunnel (pid 52748) stopped; same profile
+  `personal-dc-v2` restarted by the supervisor. No new tunnel/key/plugin.
+* **Evidence (FACT):** supervisor state `running`, backend 18766 and tunnel 18081 listening, authenticated MCP probe PASS with
+  `tool_count: 59`. ChatGPT-side visibility and `approve init` remain operator steps.
