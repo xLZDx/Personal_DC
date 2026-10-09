@@ -692,8 +692,8 @@ def test_recovery_requires_an_unambiguous_publication(apache, approvals_ready):
 
 # ====================================================================== OData
 BASE = "http://127.0.0.1:8080/acc/odata/standard.odata"
-EDMX = (b'<edmx:Edmx xmlns:edmx="http://schemas.microsoft.com/ado/2007/06/edmx"><edmx:DataServices>'
-        b'<Schema xmlns="http://schemas.microsoft.com/ado/2009/11/edm"><EntityType Name="A"/>'
+EDMX = (b'<edmx:Edmx Version="1.0" xmlns:edmx="http://schemas.microsoft.com/ado/2007/06/edmx"><edmx:DataServices>'
+        b'<Schema Namespace="AccumulationRegister" xmlns="http://schemas.microsoft.com/ado/2009/11/edm"><EntityType Name="A"/>'
         b'<EntityContainer Name="C"><EntitySet Name="S1" EntityType="A"/><EntitySet Name="S2" EntityType="A"/>'
         b'</EntityContainer></Schema></edmx:DataServices></edmx:Edmx>')
 
@@ -830,6 +830,24 @@ def test_odata_probe_metadata_end_to_end(odata_server, monkeypatch, isolated_sta
     assert result["metadata"] == {"entity_types": 1, "entity_sets": 2, "sample_sets": ["S1", "S2"]}
     assert "Authorization" not in odata_server.seen[0][1]
     assert '"action": "odata.probe"' in (isolated_state / "audit" / "native-audit.jsonl").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("body", [
+    b"<html><body>login</body></html>",
+    b'<edmx:Edmx Version="1.0" xmlns:edmx="http://schemas.microsoft.com/ado/2007/06/edmx"><edmx:DataServices>'
+    b'<Schema Namespace="N"><EntityType Name="A"/><EntityContainer Name="C"><EntitySet Name="S" EntityType="A"/>'
+    b'</EntityContainer></Schema></edmx:DataServices></edmx:Edmx>',                 # wrapper ok, Schema has no EDM namespace
+    b'<edmx:Edmx Version="1.0" xmlns:edmx="http://schemas.microsoft.com/ado/2007/06/edmx"><edmx:DataServices>'
+    b'<Schema xmlns="http://schemas.microsoft.com/ado/2009/11/edm"><EntityContainer Name="C"/></Schema>'
+    b'</edmx:DataServices></edmx:Edmx>',                                            # schema without Namespace attribute
+])
+def test_http_200_with_structurally_invalid_metadata_is_never_healthy(body, odata_server, monkeypatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+    odata_server.routes[odata_server.path("$metadata")] = (200, {"Content-Type": "application/xml"}, body)
+    result = onec_tools.odata_probe(url=odata_server.base)
+    assert result["status"] == 200 and "error" in result["metadata"]
+    assert onec_tools._odata_verdict(result) == "MALFORMED_OR_UNEXPECTED"
 
 
 def test_odata_probe_does_not_follow_redirects(odata_server):

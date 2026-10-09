@@ -29,7 +29,7 @@ from personal_dc.policy import PolicyError
 
 from . import procs
 from .deletion_policy import deny_deletion_argv
-from .git_policy import git_is_free
+from .git_policy import config_risk_from_listing, git_is_free
 from .common import (ELEVATED, READ_ONLY, WORKSPACE_WRITE, approval_or_response, atomic_write_json, audit,
                      iso, limit, native_config, new_id, read_json, redact, redact_text, safe_path,
                      sha256_text, state_subdir, threaded, valid_id)
@@ -143,6 +143,25 @@ def _git_subcommand(args: list[str]) -> str:
     return ""
 
 
+def git_config_risk(cwd: Path) -> str | None:
+    """Ask git itself for the effective configuration of ``cwd`` (any scope, nested dir, worktree, gitfile, includes).
+
+    Returns the first program-launching key, or a ``GIT_CONFIG_*`` marker when the question cannot be answered.
+    ``git config --list`` runs no configured program.
+    """
+    env = build_env(None)
+    try:
+        exe = resolve_exe("git.exe", env)
+        done = subprocess.run([str(exe), "config", "--list", "--show-scope"], cwd=str(cwd), env=env,
+                              stdin=subprocess.DEVNULL, capture_output=True, timeout=10, check=False,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError, PolicyError):
+        return "GIT_CONFIG_UNAVAILABLE"
+    if done.returncode != 0:
+        return "GIT_CONFIG_UNREADABLE"
+    return config_risk_from_listing(done.stdout.decode("utf-8", errors="replace"))
+
+
 def guard_git_args(args: list[str], cwd: Path | None = None) -> tuple[list[str], bool]:
     """Return (hardened args, auto_trusted).
 
@@ -177,7 +196,7 @@ def guard_git_args(args: list[str], cwd: Path | None = None) -> tuple[list[str],
     if sub in ("config", "credential", "filter-branch", "daemon", "http-backend"):
         raise PolicyError("GIT_SUBCOMMAND_NOT_ALLOWED")
     free = set(native_config()["git_free_subcommands"])
-    trusted, _why = git_is_free(sub, list(args[1:]), cwd, free)
+    trusted, _why = git_is_free(sub, list(args[1:]), cwd, free, git_config_risk)
     rest = list(args)
     if sub in ("diff", "log", "show"):       # never run an external diff driver / textconv from repository config
         rest = [args[0], "--no-ext-diff", "--no-textconv", *args[1:]]
@@ -264,8 +283,10 @@ def _launch(*, kind: str, label: str, argv: list[str] | None, cmdline: str | Non
     job = None
     popen = None
     try:
+        job_name = None if kill_orphans else "Local\pdc-job-" + pid_id      # detached trees stay reachable after a restart
         job = procs.Job(memory_limit_bytes=(memory_limit_mb or 0) * 1024 * 1024 or None,
-                        max_active=64 if kill_orphans else None, kill_on_close=kill_orphans)
+                        max_active=64 if kill_orphans else None, kill_on_close=kill_orphans, name=job_name)
+        meta["job_name"] = job_name
         flags = (subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP | procs.CREATE_SUSPENDED)
         args: Any = cmdline if cmdline is not None else [str(exe_path), *(argv or [])]
         popen = subprocess.Popen(args, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL, stdout=out,
@@ -348,20 +369,20 @@ def _record_descendants(managed: Managed, pids: list[int]) -> bool:
     """
     meta = managed.meta
     meta.setdefault("orphans", [])
-    known = {o["pid"] for o in meta["orphans"]}
+    known = {(o["pid"], o["created"]) for o in meta["orphans"]}          # identity = pid + creation time (PIDs get reused)
     added = False
     for pid in pids:
-        if pid == meta.get("pid") or pid in known:
+        if pid == meta.get("pid"):
             continue
         created = procs.creation_time(pid)
-        if not created:
+        if not created or (pid, created) in known:
             continue
         if len(meta["orphans"]) >= MAX_TRACKED_DESCENDANTS:
             meta["orphans_truncated"] = True
             added = True
             break
         meta["orphans"].append({"pid": pid, "created": created})
-        known.add(pid)
+        known.add((pid, created))
         added = True
     if added:
         with managed.lock, contextlib.suppress(Exception):
@@ -509,6 +530,10 @@ def ensure_recovered() -> None:
                 if meta.get("state") == "running" and pid and created and procs.is_alive(pid, created) and (
                         (procs.image_path(pid) or "").casefold() == str(meta.get("exe", "")).casefold()):
                     meta["recovered"] = True
+                    name = meta.get("job_name")
+                    managed.job = procs.Job.open(name) if name else None
+                    # without the named job only periodic scans can find descendants: say so instead of implying completeness
+                    meta["containment"] = "job" if managed.job is not None else "scan_only_incomplete"
                     with _REG_LOCK:
                         _REGISTRY[meta["id"]] = managed
                     managed.save()
@@ -663,7 +688,7 @@ def read_output(managed: Managed, stream: str = "stdout", offset: int = 0, max_b
 def public_meta(meta: dict[str, Any]) -> dict[str, Any]:
     keys = ("id", "kind", "label", "state", "mode", "exe", "cwd", "summary", "owner", "started_at", "ended_at",
             "pid", "timeout_s", "exit_code", "stop_reason", "output_truncated", "children_seen", "recovered",
-            "approval_id", "job_assigned", "kill_verified", "orphans")
+            "approval_id", "job_assigned", "kill_verified", "orphans", "containment")
     return {k: meta.get(k) for k in keys}
 
 

@@ -80,6 +80,8 @@ def _k32() -> Any:
     k.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
                                              ctypes.POINTER(wintypes.DWORD)]
     k.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    k.OpenJobObjectW.restype = wintypes.HANDLE
+    k.OpenJobObjectW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
     k.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
     k.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
                                             ctypes.c_void_p]
@@ -225,6 +227,10 @@ def terminate_tree(root_pid: int, root_created: int) -> list[int]:
     return killed
 
 
+JOB_OBJECT_QUERY = 0x0004
+JOB_OBJECT_TERMINATE = 0x0008
+
+
 class Job:
     """A Windows Job Object used to track and terminate a launched process tree.
 
@@ -233,9 +239,10 @@ class Job:
     """
 
     def __init__(self, memory_limit_bytes: int | None = None, max_active: int | None = None,
-                 kill_on_close: bool = False) -> None:
+                 kill_on_close: bool = False, name: str | None = None) -> None:
         k = k32()
-        self.handle = k.CreateJobObjectW(None, None)
+        self.name = name
+        self.handle = k.CreateJobObjectW(None, name)
         if not self.handle:
             raise PolicyError("JOB_CREATE_FAILED")
         flags, info = 0, _EXT_LIMIT()
@@ -254,6 +261,19 @@ class Job:
                 k.CloseHandle(self.handle)
                 self.handle = None
                 raise PolicyError("JOB_LIMITS_NOT_APPLIED")
+
+    @classmethod
+    def open(cls, name: str) -> "Job | None":
+        """Re-open a named job created by an earlier server instance (it lives while any member process lives).
+
+        Gives a restarted backend gap-free membership/termination of a detached tree instead of periodic scans.
+        """
+        handle = k32().OpenJobObjectW(JOB_OBJECT_QUERY | JOB_OBJECT_TERMINATE, False, name)
+        if not handle:
+            return None
+        job = cls.__new__(cls)
+        job.handle, job.name = handle, name
+        return job
 
     def assign(self, process_handle: int) -> bool:
         return bool(k32().AssignProcessToJobObject(self.handle, process_handle))

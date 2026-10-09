@@ -523,3 +523,37 @@ def test_orphan_stop_never_kills_a_process_with_a_different_creation_time(isolat
         assert _disk_meta(directory)["orphans"] == []
     finally:
         proc.kill()
+
+
+def test_restart_while_the_detached_parent_is_alive_keeps_gap_free_job_ownership(isolated_state, work, approvals_ready):
+    pending = pt.process_start(PY, ["-c", GRANDCHILD], cwd=str(work), timeout_s=120, detach=True)
+    assert pending["status"] == "APPROVAL_REQUIRED"
+    common.grant_approval(pending["approval_id"])
+    started = pt.process_start(PY, ["-c", GRANDCHILD], cwd=str(work), timeout_s=120, detach=True,
+                               approval_id=pending["approval_id"])
+    child = _printed_pid(started["id"])
+    assert _disk_meta(isolated_state / "procs" / started["id"])["job_name"].startswith("Local\pdc-job-prc-")
+    with pt._REG_LOCK:                                                  # backend restart: registry and job handle are gone
+        old = pt._REGISTRY.pop(started["id"])
+    old.cancel.set()
+    pt._RECOVERED = False
+    pt.ensure_recovered()
+    adopted = pt.get_managed(started["id"], "process")
+    assert adopted.meta["recovered"] is True and adopted.meta["containment"] == "job"
+    assert child in adopted.job.pids()                                  # membership straight from the kernel job, no scan gap
+    result = pt.process_stop(started["id"])
+    assert _wait(lambda: not procs.is_alive(child) and not procs.is_alive(adopted.meta["pid"], adopted.meta["created"]), 15)
+    assert result["state"] in ("stopped", "exited_unknown", "exited") or result.get("already_ended")
+
+
+def test_a_detached_record_without_a_job_name_is_reported_as_incompletely_contained(isolated_state, work):
+    proc = _foreign_process()
+    try:
+        _write_record(isolated_state, "prc-8888888888888888", work, state="running", exe=PY, pid=proc.pid,
+                      created=procs.creation_time(proc.pid))
+        pt._RECOVERED = False
+        pt.ensure_recovered()
+        meta = pt.get_managed("prc-8888888888888888", "process").meta
+        assert meta["containment"] == "scan_only_incomplete"
+    finally:
+        proc.kill()

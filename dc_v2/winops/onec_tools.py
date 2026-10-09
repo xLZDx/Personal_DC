@@ -565,20 +565,30 @@ def _odata_url(publication: str, url: str, path: str, server_root: str, with_cre
 
 
 _EDMX_NAMESPACES = {"http://schemas.microsoft.com/ado/2007/06/edmx", "http://docs.oasis-open.org/odata/ns/edmx"}
+_EDM_NAMESPACES = {"http://schemas.microsoft.com/ado/2006/04/edm", "http://schemas.microsoft.com/ado/2007/05/edm",
+                   "http://schemas.microsoft.com/ado/2008/01/edm", "http://schemas.microsoft.com/ado/2008/09/edm",
+                   "http://schemas.microsoft.com/ado/2009/11/edm", "http://docs.oasis-open.org/odata/ns/edm"}
+
+
+def _ns(tag: str) -> str:
+    return tag[1:].split("}", 1)[0] if tag.startswith("{") else ""
 
 
 def _edmx_structure_error(root: ET.Element) -> str | None:
-    """OData $metadata must be an EDMX document: Edmx root in a known namespace > DataServices > Schema > EntityContainer."""
-    namespace = root.tag[1:].split("}", 1)[0] if root.tag.startswith("{") else ""
-    if _strip_ns(root.tag) != "Edmx" or namespace not in _EDMX_NAMESPACES:
+    """OData $metadata must be EDMX: edmx:Edmx[Version] > edmx:DataServices (same namespace) > edm:Schema[Namespace]
+    > edm:EntityContainer[Name], with Schema/EntityContainer in a known EDM namespace (never namespace-less)."""
+    namespace = _ns(root.tag)
+    if _strip_ns(root.tag) != "Edmx" or namespace not in _EDMX_NAMESPACES or not root.get("Version"):
         return "NOT_EDMX"
-    services = [c for c in root if _strip_ns(c.tag) == "DataServices"]
+    services = [c for c in root if _strip_ns(c.tag) == "DataServices" and _ns(c.tag) == namespace]
     if len(services) != 1:
         return "EDMX_DATASERVICES_MISSING"
-    schemas = [c for c in services[0] if _strip_ns(c.tag) == "Schema"]
+    schemas = [c for c in services[0] if _strip_ns(c.tag) == "Schema" and _ns(c.tag) in _EDM_NAMESPACES
+               and (c.get("Namespace") or "").strip()]
     if not schemas:
         return "EDMX_SCHEMA_MISSING"
-    if not any(_strip_ns(e.tag) == "EntityContainer" for s in schemas for e in s):
+    if not any(_strip_ns(e.tag) == "EntityContainer" and _ns(e.tag) == _ns(s.tag) and (e.get("Name") or "").strip()
+               for s in schemas for e in s):
         return "EDMX_ENTITY_CONTAINER_MISSING"
     return None
 

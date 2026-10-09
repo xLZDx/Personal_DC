@@ -211,3 +211,39 @@ def test_automated_rollback_is_refused_while_the_no_deletion_policy_is_on(plan_e
     owned = plan_env.make_plan(state="installed", new_software_keys=[f"HKLM:{PRODUCT}"])
     out = deploy_tools.deployment_rollback(owned["id"])
     assert out["status"] == "NOT_SUPPORTED" and out["reason"] == "DELETION_NOT_ALLOWED" and plan_env.launches == []
+
+
+# ----------------------------------------------------------------- round 2: F07 provenance at execution time
+def test_product_installed_between_planning_and_apply_is_never_owned(plan_env, monkeypatch, native_overlay):
+    native_overlay(deny_deletion=False)
+    plan = plan_env.make_plan()                                            # planned while the product was absent
+    monkeypatch.setattr(deploy_tools, "_installed",
+                        lambda: [{"scope": "HKLM", "key": PRODUCT, "name": "x", "version": "1"}])   # someone else installed it
+    deploy_tools.deployment_apply(plan["id"], approval_id=_approved(plan["id"]))
+    saved = deploy_tools._load_plan(plan["id"])
+    assert saved["product_preexisting"] is True and saved["inventory_at_apply"] == [f"HKLM:{PRODUCT}"]
+    deploy_tools._claim_ownership(saved)
+    assert "ownership" not in saved and deploy_tools._owns(saved) is False
+    monkeypatch.setattr(deploy_tools, "_settle", lambda plan: None)
+    saved.update(state="installed", new_software_keys=[f"HKLM:{PRODUCT}"])
+    deploy_tools._save_plan(saved)
+    assert deploy_tools.deployment_rollback(saved["id"])["reason"] == "INSTALLATION_OWNERSHIP_NOT_PROVEN"
+
+
+def test_new_software_diff_uses_the_inventory_taken_at_apply_time(plan_env, monkeypatch):
+    plan = plan_env.make_plan(inventory_before=[])
+    monkeypatch.setattr(deploy_tools, "_installed", lambda: [{"scope": "HKLM", "key": "{OTHER}", "name": "o", "version": "1"}])
+    deploy_tools.deployment_apply(plan["id"], approval_id=_approved(plan["id"]))
+    assert deploy_tools._load_plan(plan["id"])["inventory_at_apply"] == ["HKLM:{OTHER}"]
+
+
+def test_verified_rollback_retires_ownership_so_a_later_plan_can_claim(plan_env):
+    first, second = plan_env.make_plan(), plan_env.make_plan()
+    deploy_tools._claim_ownership(first)
+    deploy_tools._claim_ownership(second)
+    assert first["ownership"] == "owned" and second["ownership"].startswith("conflict:")
+    deploy_tools._retire_ownership(first)
+    assert first["ownership"] == "retired" and deploy_tools._owns(first) is False
+    third = plan_env.make_plan()
+    deploy_tools._claim_ownership(third)
+    assert third["ownership"] == "owned" and deploy_tools._owns(third) is True

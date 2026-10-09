@@ -420,8 +420,15 @@ def test_git_program_forcing_and_force_push_blocked(args):
         pt.guard_git_args(args)
 
 
-def test_git_hardening_and_auto_trust_classification():
-    hardened, trusted = pt.guard_git_args(["status"])
+@pytest.fixture()
+def git_repo(work):
+    import subprocess
+    subprocess.run(["git", "init", "-q"], cwd=work, check=True, capture_output=True)
+    return work
+
+
+def test_git_hardening_and_auto_trust_classification(git_repo):
+    hardened, trusted = pt.guard_git_args(["status"], git_repo)
     assert hardened[-1] == "status" and trusted is True
     joined = " ".join(hardened)
     assert "core.fsmonitor=false" in joined and "core.hooksPath=NUL" in joined and "protocol.ext.allow=never" in joined
@@ -429,10 +436,11 @@ def test_git_hardening_and_auto_trust_classification():
         assert pt.guard_git_args([sub, "x"])[1] is False, sub
     assert "core.editor=false" in joined and "core.pager=cat" in joined and "sequence.editor=false" in joined
     for sub in ("status", "diff", "log", "show", "add", "branch", "remote"):
-        assert pt.guard_git_args([sub])[1] is True, sub
-    assert pt.guard_git_args(["commit"])[1] is False                       # no -m: would open an editor
-    assert pt.guard_git_args(["commit", "-m", "msg"])[1] is True
-    assert "--no-ext-diff" in pt.guard_git_args(["diff"])[0] and "--no-textconv" in pt.guard_git_args(["log"])[0]
+        assert pt.guard_git_args([sub], git_repo)[1] is True, sub
+    assert pt.guard_git_args(["status"])[1] is False                         # no cwd: effective config unknown
+    assert pt.guard_git_args(["commit"], git_repo)[1] is False                       # no -m: would open an editor
+    assert pt.guard_git_args(["commit", "-m", "msg"], git_repo)[1] is True
+    assert "--no-ext-diff" in pt.guard_git_args(["diff"], git_repo)[0] and "--no-textconv" in pt.guard_git_args(["log"], git_repo)[0]
     assert pt.guard_git_args(["push", "origin", "main"])[1] is False        # plain push is allowed but never free
 
 
@@ -459,7 +467,7 @@ def test_git_output_file_and_noindex_options_denied(args):
     ["log", "--oneline", "-n", "3"], ["status", "-s"], ["diff", "--stat"], ["diff", "--no-color"],
     ["log", "--format=%H", "--", "--output=x"], ["log", "--", "-o", "--no-index"],
 ])
-def test_git_benign_options_and_args_after_double_dash_are_not_inspected(args):
-    hardened, trusted = pt.guard_git_args(args)
+def test_git_benign_options_and_args_after_double_dash_are_not_inspected(args, git_repo):
+    hardened, trusted = pt.guard_git_args(args, git_repo)
     injected = {"--no-ext-diff", "--no-textconv"}              # the policy adds these after the subcommand
     assert trusted is True and [a for a in hardened if a not in injected][-len(args):] == args

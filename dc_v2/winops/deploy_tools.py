@@ -389,6 +389,35 @@ def _owns(plan: dict[str, Any]) -> bool:
     return marker.get("plan") == plan["id"] and plan.get("ownership") == "owned"
 
 
+def _pin_provenance(plan: dict[str, Any]) -> None:
+    """Re-establish, immediately before the installer starts, what was installed at that moment.
+
+    Ownership must come from execution time, not plan-creation time: a product installed by someone else between
+    planning and applying makes the plan non-owning (no automated rollback), and the "new software" diff is taken
+    against this fresh inventory.
+    """
+    installed = _installed()
+    plan["inventory_at_apply"] = sorted(f'{r["scope"]}:{r["key"]}' for r in installed)
+    code = _product_code(plan)
+    if code and any(r["key"].casefold() == code.casefold() for r in installed):
+        plan["product_preexisting"] = True
+        plan["history"].append({"at": iso(), "event": "product_present_at_apply"})
+    _save_plan(plan)
+
+
+def _retire_ownership(plan: dict[str, Any]) -> None:
+    """A verified uninstall ends the ownership record so a later legitimate install plan can claim the product."""
+    code = _product_code(plan)
+    if not code:
+        return
+    with file_lock(_owners() / (_safe_code(code) + ".lock")):
+        marker = _owners() / (_safe_code(code) + ".json")
+        if read_json(marker, {}).get("plan") == plan["id"]:
+            with contextlib.suppress(OSError):
+                marker.unlink()
+    plan["ownership"] = "retired"
+
+
 def _run_apply(plan: dict[str, Any], plan_id: str, approval_id: str | None, timeout_s: int) -> dict[str, Any]:
     source = _installer_path(plan["installer"])
     stage_dir = state_subdir("staging") / plan_id
@@ -407,6 +436,7 @@ def _run_apply(plan: dict[str, Any], plan_id: str, approval_id: str | None, time
         return {"plan_id": plan_id, "state": "failed", "reason": "STAGING_FAILED:" + type(exc).__name__,
                 "note": "no installer was started; request a new approval to retry"}
     log = stage_dir / "install.log"
+    _pin_provenance(plan)
     exe, args = _argv_for(plan, staged, log)
     try:
         managed = pt.launch(kind="deployment", label="install:" + plan_id, argv=args, cmdline=None, exe_path=exe,
@@ -487,13 +517,15 @@ def _settle(plan: dict[str, Any]) -> None:
         plan["state"] = "rolled_back" if code in (0, 1605, *REBOOT_CODES) else "rollback_failed"
     plan["exit_code"] = code
     plan["reboot_required"] = code in REBOOT_CODES or (_reboot_pending() and not plan.get("reboot_pending_before"))
-    before = set(plan["inventory_before"])
+    before = set(plan.get("inventory_at_apply") or plan["inventory_before"])
     plan["new_software_keys"] = sorted({f'{r["scope"]}:{r["key"]}' for r in _installed()} - before)[:50]
     plan["ended_at"] = iso()
     product = _product_code(plan)
     if installing and plan["state"] in ("installed", "installed_unconfirmed") and product and any(
             k.casefold().endswith(":" + product.casefold()) for k in plan["new_software_keys"]):
         _claim_ownership(plan)
+    if not installing and plan["state"] == "rolled_back":
+        _retire_ownership(plan)
     plan["history"].append({"at": iso(), "event": plan["state"], "exit_code": code})
     _save_plan(plan)
     audit("deployment.end", plan["state"], plan_id=plan["id"], exit_code=code)

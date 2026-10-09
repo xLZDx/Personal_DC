@@ -11,7 +11,7 @@ import pytest
 from personal_dc.policy import PolicyError
 
 from dc_v2.winops import command_tools as ct
-from dc_v2.winops import deletion_policy, onec_tools, procs, sysrun
+from dc_v2.winops import deletion_policy, git_policy, onec_tools, procs, sysrun
 from dc_v2.winops import process_tools as pt
 
 
@@ -23,14 +23,6 @@ def _git(cwd, *args):
 def repo(work):
     _git(work, "init", "-q")
     return work
-
-
-@pytest.fixture()
-def clean_home(monkeypatch, tmp_path):
-    home = tmp_path / "home_dir"
-    home.mkdir()
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
-    return home
 
 
 # ------------------------------------------------------------------ F01
@@ -45,7 +37,7 @@ def clean_home(monkeypatch, tmp_path):
     (["commit", "-e", "-m", "x"], False), (["commit", "-F", "f.txt"], False),
     (["switch", "main"], False), (["status"], True), (["log", "-n", "3"], True),
 ])
-def test_git_free_set_is_argument_aware(args, free, repo, clean_home):
+def test_git_free_set_is_argument_aware(args, free, repo):
     assert pt.guard_git_args(args, repo)[1] is free, args
 
 
@@ -54,7 +46,7 @@ def test_git_free_set_is_argument_aware(args, free, repo, clean_home):
     "[filter \"lfs\"]\n\tclean = calc.exe\n", "[alias]\n\tst = !calc.exe\n", "[core]\n\tpager = calc.exe\n",
     "[core]\n\tfsmonitor = calc.exe\n",
 ])
-def test_repo_config_that_launches_programs_disables_free_git(line, repo, clean_home):
+def test_repo_config_that_launches_programs_disables_free_git(line, repo):
     assert pt.guard_git_args(["status"], repo)[1] is True
     config = repo / ".git" / "config"
     config.write_text(config.read_text(encoding="utf-8") + line, encoding="utf-8")
@@ -62,9 +54,39 @@ def test_repo_config_that_launches_programs_disables_free_git(line, repo, clean_
     assert pt.guard_git_args(["add", "x"], repo)[1] is False
 
 
-def test_user_level_config_counts_too(repo, clean_home):
-    (clean_home / ".gitconfig").write_text("[core]\n\teditor = notepad.exe\n", encoding="utf-8")
-    assert pt.guard_git_args(["status"], repo)[1] is False
+def test_system_and_global_scopes_are_trusted_only_the_repository_scope_is_not(repo):
+    # Git for Windows ships filter.lfs / credential.helper in the system config: that must not disable free git.
+    assert pt.guard_git_args(["status"], repo)[1] is True
+    listing = "system\tfilter.lfs.clean=git-lfs clean\nglobal\tcredential.helper=manager\nlocal\tcore.bare=false\n"
+    assert git_policy.config_risk_from_listing(listing) is None
+    assert git_policy.config_risk_from_listing(listing + "local\tfilter.x.clean=calc.exe\n") == "filter.x.clean"
+    assert git_policy.config_risk_from_listing("command\tcore.editor=calc.exe\n") == "core.editor"
+
+
+def test_filter_in_a_parent_repo_is_found_from_a_nested_directory_and_never_runs(repo):
+    sentinel = repo / "filter-ran.txt"
+    script = repo / "filt.cmd"
+    script.write_text(f'@echo ran> "{sentinel}"\r\n@more\r\n', encoding="utf-8")
+    config = repo / ".git" / "config"
+    config.write_text(config.read_text(encoding="utf-8") + f'[filter "x"]\n\tclean = {script.as_posix()}\n', encoding="utf-8")
+    (repo / ".gitattributes").write_text("* filter=x\n", encoding="utf-8")
+    nested = repo / "a" / "b"
+    nested.mkdir(parents=True)
+    (nested / "f.txt").write_text("data\n", encoding="utf-8")
+    assert pt.guard_git_args(["add", "f.txt"], nested)[1] is False
+    assert pt.guard_git_args(["status"], nested)[1] is False
+    via_exec = ct.command_execute("", shell="exec", argv=["git.exe", "add", "f.txt"], cwd=str(nested), mode="workspace_write")
+    assert via_exec["status"] == "APPROVAL_REQUIRED"
+    via_start = pt.process_start("git.exe", ["add", "f.txt"], cwd=str(nested), mode="workspace_write")
+    assert via_start["status"] == "APPROVAL_REQUIRED"
+    assert not sentinel.exists()
+
+
+def test_unreadable_git_config_means_not_free(tmp_path, monkeypatch):
+    plain = tmp_path / "work" / "plain"                  # not a repository: git config --list still works (global)
+    plain.mkdir(parents=True)
+    monkeypatch.setattr(pt, "resolve_exe", lambda *a, **k: (_ for _ in ()).throw(PolicyError("EXECUTABLE_NOT_FOUND")))
+    assert pt.guard_git_args(["status"], plain)[1] is False
 
 
 # ------------------------------------------------------------------ ND01
@@ -94,15 +116,30 @@ def test_benign_git_forms_are_not_denied(command):
 EDMX = "http://schemas.microsoft.com/ado/2007/06/edmx"
 
 
+EDM = "http://schemas.microsoft.com/ado/2009/11/edm"
+GOOD = (f"<edmx:Edmx Version='1.0' xmlns:edmx='{EDMX}'><edmx:DataServices><Schema Namespace='N' xmlns='{EDM}'>"
+        f"<EntityContainer Name='C'/></Schema></edmx:DataServices></edmx:Edmx>").encode()
+
+
 @pytest.mark.parametrize("body, ok", [
     (b"<html></html>", False),
     (b"<root><EntityType/><EntitySet Name='a'/></root>", False),
-    (b"<edmx:Edmx xmlns:edmx='urn:evil'><edmx:DataServices><Schema><EntityContainer/></Schema></edmx:DataServices></edmx:Edmx>", False),
-    (f"<edmx:Edmx xmlns:edmx='{EDMX}'/>".encode(), False),
-    (f"<edmx:Edmx xmlns:edmx='{EDMX}'><edmx:DataServices/></edmx:Edmx>".encode(), False),
-    (f"<edmx:Edmx xmlns:edmx='{EDMX}'><edmx:DataServices><Schema/></edmx:DataServices></edmx:Edmx>".encode(), False),
-    (f"<edmx:Edmx xmlns:edmx='{EDMX}'><edmx:DataServices><Schema><EntityContainer Name='C'/></Schema>"
-     f"</edmx:DataServices></edmx:Edmx>".encode(), True),
+    (b"<edmx:Edmx Version='1.0' xmlns:edmx='urn:evil'><edmx:DataServices><Schema Namespace='N'><EntityContainer Name='C'/>"
+     b"</Schema></edmx:DataServices></edmx:Edmx>", False),
+    (f"<edmx:Edmx Version='1.0' xmlns:edmx='{EDMX}'/>".encode(), False),
+    (f"<edmx:Edmx Version='1.0' xmlns:edmx='{EDMX}'><edmx:DataServices/></edmx:Edmx>".encode(), False),
+    (f"<edmx:Edmx Version='1.0' xmlns:edmx='{EDMX}'><edmx:DataServices><Schema xmlns='{EDM}' Namespace='N'/>"
+     f"</edmx:DataServices></edmx:Edmx>".encode(), False),
+    # wrapper is valid but Schema/EntityContainer carry no EDM namespace
+    (f"<edmx:Edmx Version='1.0' xmlns:edmx='{EDMX}'><edmx:DataServices><Schema Namespace='N'><EntityContainer Name='C'/>"
+     f"</Schema></edmx:DataServices></edmx:Edmx>".encode(), False),
+    (GOOD.replace(b" Namespace='N'", b""), False),                          # schema without Namespace attribute
+    (GOOD.replace(b"Name='C'", b""), False),                                # container without Name
+    (GOOD.replace(b" Version='1.0'", b""), False),                          # Edmx without Version
+    (GOOD, True),
+    (b"<edmx:Edmx Version='4.0' xmlns:edmx='http://docs.oasis-open.org/odata/ns/edmx'><edmx:DataServices>"
+     b"<Schema Namespace='N' xmlns='http://docs.oasis-open.org/odata/ns/edm'><EntityContainer Name='C'/></Schema>"
+     b"</edmx:DataServices></edmx:Edmx>", True),
 ])
 def test_edmx_structure_is_validated(body, ok):
     error = onec_tools._edmx_structure_error(onec_tools._parse_xml_safe(body))
@@ -120,12 +157,16 @@ def test_more_than_100_descendants_are_tracked_and_overflow_is_flagged(monkeypat
     assert len(managed.meta["orphans"]) == 135 and managed.meta["orphans_truncated"] is True
 
 
-def test_record_descendants_skips_root_and_duplicates(monkeypatch):
-    monkeypatch.setattr(procs, "creation_time", lambda pid: pid + 1)
+def test_record_descendants_skips_root_and_duplicates_but_not_a_reused_pid(monkeypatch):
+    created = {6: 100}
+    monkeypatch.setattr(procs, "creation_time", lambda pid: created.get(pid, pid + 1))
     managed = SimpleNamespace(meta={"pid": 5, "orphans": []}, lock=threading.RLock(), save=lambda: None)
     assert pt._record_descendants(managed, [5, 6, 6]) is True
     assert [o["pid"] for o in managed.meta["orphans"]] == [6]
     assert pt._record_descendants(managed, [5, 6]) is False
+    created[6] = 200                                       # same PID, new process: a different identity
+    assert pt._record_descendants(managed, [6]) is True
+    assert [(o["pid"], o["created"]) for o in managed.meta["orphans"]] == [(6, 100), (6, 200)]
 
 
 # ------------------------------------------------------------------ PS01
@@ -146,9 +187,22 @@ def test_script_file_is_hash_verified_before_launch(isolated_state):
         sysrun.verify_script_file(path, text)
 
 
-def test_script_cache_is_bounded(isolated_state, monkeypatch):
+def test_script_cache_quota_is_an_admission_limit_without_any_clock(isolated_state, monkeypatch):
     monkeypatch.setattr(sysrun, "SCRIPT_MAX_FILES", 10)
-    for i in range(30):
-        sysrun._PRUNE_STATE["last"] = 0.0
+    for i in range(250):                                  # burst: no pruning clock to reset
         sysrun.script_file(f"Write-Output {i}")
-    assert len(list((isolated_state / "scripts").glob("*.ps1"))) <= 11
+        assert len(list((isolated_state / "scripts").glob("*.ps1"))) <= 10
+    assert (isolated_state / "scripts" / (__import__("hashlib").sha256(b"\xef\xbb\xbf" + b"Write-Output 249").hexdigest()[:40] + ".ps1")).is_file()
+
+
+def test_script_cache_byte_quota_and_full_rejection(isolated_state, monkeypatch):
+    monkeypatch.setattr(sysrun, "SCRIPT_MAX_BYTES", 4000)
+    for i in range(20):
+        sysrun.script_file(f"# {i}\n" + "x" * 500)
+        total = sum(p.stat().st_size for p in (isolated_state / "scripts").glob("*.ps1"))
+        assert total <= 4000
+    with pytest.raises(PolicyError, match="SCRIPT_TOO_LARGE"):
+        sysrun.script_file("y" * 2000)
+    monkeypatch.setattr(sysrun, "SCRIPT_MAX_FILES", 0)
+    with pytest.raises(PolicyError, match="SCRIPT_CACHE_FULL"):
+        sysrun.script_file("Write-Output new")

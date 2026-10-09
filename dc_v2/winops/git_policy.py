@@ -14,6 +14,7 @@ Everything that does not qualify is not "denied": it returns APPROVAL_REQUIRED s
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 # Any section with these names is a program-launching surface (filter drivers, aliases, credential helpers, ...).
@@ -26,6 +27,7 @@ _RISKY_KEY = re.compile(
     r"commit\.gpgsign|web\.browser|help\.browser|http\.(proxy|sslcommand|cookiefile)|"
     r"credential\..*|protocol\..*\.allow)$")
 
+_UNTRUSTED_SCOPES = {"local", "worktree", "command"}
 _READ_ONLY = {"status", "diff", "log", "show", "rev-parse", "ls-files", "blame", "describe", "shortlog"}
 # Listing-only options for ``git branch``; every other form (create/delete/rename/edit/upstream) needs approval.
 _BRANCH_LIST = {"-a", "-r", "-v", "-vv", "--all", "--remotes", "--list", "-l", "--show-current", "--verbose",
@@ -36,41 +38,26 @@ _COMMIT_FORBIDDEN = {"--edit", "--template", "--file", "--reuse-message", "--ree
                      "--amend", "--interactive", "--patch", "--all-from"}
 
 
-def _config_files(cwd: Path) -> list[Path]:
-    files = [Path.home() / ".gitconfig", Path.home() / ".config" / "git" / "config"]
-    git = cwd / ".git"
-    if git.is_dir():
-        files.append(git / "config")
-    return files
+def config_risk_from_listing(listing: str) -> str | None:
+    """First program-launching key in ``git config --list`` output (``key=value`` lines), or None.
 
-
-def config_launches_programs(cwd: Path) -> str | None:
-    """Return the first program-launching setting found in the repo/user git config, or None."""
-    if (cwd / ".git").is_file():                 # gitfile redirect (worktree/submodule): real config location unknown
-        return "GITFILE_REDIRECT"
-    for path in _config_files(cwd):
-        try:
-            if not path.is_file():
-                continue
-            if path.stat().st_size > 512 * 1024:
-                return "CONFIG_TOO_LARGE"
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return "CONFIG_UNREADABLE"
-        section = ""
-        for raw in text.splitlines():
-            line = raw.strip()
-            if line.startswith("[") and "]" in line:
-                header = line[1:line.index("]")].strip()
-                match = re.match(r'^([A-Za-z0-9.-]+)\s+"(.*)"$', header)
-                name, sub = (match.group(1), match.group(2)) if match else (header, "")
-                if name.casefold() in _RISKY_SECTIONS:
-                    return name
-                section = name + ("." + sub if sub else "")
-            elif "=" in line and not line.startswith(("#", ";")) and section:
-                key = line.split("=", 1)[0].strip()
-                if _RISKY_KEY.match(f"{section}.{key}"):
-                    return f"{section}.{key}"
+    The listing (``git config --list --show-scope``) is produced by git itself for the real working directory, so
+    repository discovery (parent directories, worktrees, gitfile redirects) and includes are resolved by git rather
+    than re-implemented here. Only scopes a repository controls (local, worktree, command) are untrusted: system and
+    global configuration belong to the administrator/user (e.g. Git for Windows ships ``filter.lfs`` and
+    ``credential.helper`` there), whereas a repository's own config must never name a program.
+    """
+    for raw in listing.splitlines():
+        scope, _, entry = raw.partition("	")
+        if not entry:
+            scope, entry = "local", raw                    # no scope column: judge conservatively
+        if scope.strip() not in _UNTRUSTED_SCOPES:
+            continue
+        key = entry.split("=", 1)[0].strip()
+        if not key:
+            continue
+        if key.split(".", 1)[0].casefold() in _RISKY_SECTIONS or _RISKY_KEY.match(key):
+            return key
     return None
 
 
@@ -111,14 +98,18 @@ def args_allowed_for_free(sub: str, args: list[str]) -> bool:
     return False                                  # switch/checkout/restore/... may run filters or discard work
 
 
-def git_is_free(sub: str, args: list[str], cwd: Path | None, free_set: set[str]) -> tuple[bool, str]:
-    """Approval-free eligibility; returns (free, reason-when-not)."""
+def git_is_free(sub: str, args: list[str], cwd: Path | None, free_set: set[str],
+                config_probe: Callable[[Path], str | None] | None = None) -> tuple[bool, str]:
+    """Approval-free eligibility; returns (free, reason-when-not).
+
+    Without a ``config_probe`` the effective git configuration cannot be inspected, so nothing is free."""
     if sub not in free_set:
         return False, "SUBCOMMAND_NOT_IN_FREE_SET"
     if not args_allowed_for_free(sub, args):
         return False, "ARGUMENTS_NOT_IN_FREE_ALLOWLIST"
-    if cwd is not None:
-        risky = config_launches_programs(cwd)
-        if risky:
-            return False, "CONFIG_LAUNCHES_PROGRAMS:" + risky
+    if cwd is None or config_probe is None:
+        return False, "EFFECTIVE_GIT_CONFIG_UNKNOWN"
+    risky = config_probe(cwd)
+    if risky:
+        return False, "CONFIG_LAUNCHES_PROGRAMS:" + risky
     return True, ""

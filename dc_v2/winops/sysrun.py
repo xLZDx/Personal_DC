@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,7 @@ from typing import Any
 from personal_dc.policy import PolicyError
 
 from . import procs
-from .common import atomic_write_bytes, state_subdir
+from .common import atomic_write_bytes, file_lock, state_subdir
 
 MAX_BYTES = 400000
 _PRELUDE = ("$ProgressPreference='SilentlyContinue';$ErrorActionPreference='Stop';"
@@ -82,47 +83,55 @@ def script_file(text: str) -> Path:
     """Persist a PowerShell script as a content-addressed ``.ps1`` (UTF-8 with BOM) and return its path.
 
     Running a file avoids ``-EncodedCommand`` blobs, which behavioural antivirus engines treat as a malware
-    signature. The name is the SHA-256 of the content, so identical text maps to the same read-only file and the
-    approval digest (which binds the script text) also binds the file that runs.
+    signature. The name is the SHA-256 of the content, so identical text maps to the same file and the approval
+    digest (which binds the script text) also binds the file that runs.
+
+    Capacity is an ADMISSION limit: room is made (expired, then oldest files) before a new script is written, and
+    the call fails with ``SCRIPT_CACHE_FULL`` rather than exceed the file-count or byte quota.
     """
     folder = state_subdir("scripts")
     body = b"\xef\xbb\xbf" + text.encode("utf-8")
+    if len(body) > SCRIPT_MAX_BYTES // 4:
+        raise PolicyError("SCRIPT_TOO_LARGE")
     path = folder / (hashlib.sha256(body).hexdigest()[:40] + ".ps1")
-    if not path.exists() or path.read_bytes() != body:
+    with _SCRIPT_LOCK, file_lock(folder / ".quota.lock"):
+        with contextlib.suppress(OSError):
+            if path.read_bytes() == body:
+                os.utime(path)                         # reused: counts as recently used
+                return path
+        _make_room(folder, len(body), keep=path)
         atomic_write_bytes(path, body)
-    _prune_scripts(folder, keep=path)
     return path
 
 
 SCRIPT_MAX_FILES = 200
 SCRIPT_MAX_BYTES = 8 * 1024 * 1024
-_PRUNE_STATE = {"last": 0.0}
+_SCRIPT_LOCK = threading.Lock()
 
 
-def _prune_scripts(folder: Path, keep: Path) -> None:
-    """Bounded housekeeping of server-owned staging scripts: age, file count and total bytes; at most once a minute
-    and at most 100 removals per pass, so a flood of requests can neither fill the disk nor stall the backend."""
-    now = time.time()
-    if now - _PRUNE_STATE["last"] < 60:
-        return
-    _PRUNE_STATE["last"] = now
+def _make_room(folder: Path, incoming: int, keep: Path) -> None:
+    """Free capacity for one more script (caller holds the quota lock): expired files first, then oldest first."""
     entries = []
     with contextlib.suppress(OSError):
         for item in folder.glob("*.ps1"):
+            if item == keep:
+                continue
             st = item.stat()
-            entries.append((st.st_mtime, st.st_size, item))
+            entries.append([st.st_mtime, st.st_size, item])
     entries.sort(key=lambda e: e[0])                       # oldest first
-    total = sum(e[1] for e in entries)
-    cutoff = now - SCRIPT_KEEP_DAYS * 86400
-    removed = 0
+    cutoff = time.time() - SCRIPT_KEEP_DAYS * 86400
+    count, total = len(entries), sum(e[1] for e in entries)
     for mtime, size, item in entries:
-        if removed >= 100 or item == keep:
-            continue
-        if mtime < cutoff or len(entries) - removed > SCRIPT_MAX_FILES or total > SCRIPT_MAX_BYTES:
-            with contextlib.suppress(OSError):
-                item.unlink()
-                total -= size
-                removed += 1
+        expired = mtime < cutoff
+        if not expired and count + 1 <= SCRIPT_MAX_FILES and total + incoming <= SCRIPT_MAX_BYTES:
+            break
+        try:
+            item.unlink()
+        except OSError:
+            continue                                       # in use right now: cannot free it
+        count, total = count - 1, total - size
+    if count + 1 > SCRIPT_MAX_FILES or total + incoming > SCRIPT_MAX_BYTES:
+        raise PolicyError("SCRIPT_CACHE_FULL")
 
 
 def verify_script_file(path: Path, text: str) -> None:

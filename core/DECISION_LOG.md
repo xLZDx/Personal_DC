@@ -90,3 +90,11 @@ Durable decisions and evidence only. Newest entries at the bottom. Full per-comm
   EDMX structure validation; per-product ownership/serialization of installs; live persistence of detached descendants;
   PowerShell script files written only after approval, hash-verified, quota-bounded; deletion policy now precedes cwd/approval.
 * **Verification:** full suite 1424 passed, 4 skipped (agent-run, no CI). Live redeploy needs one UAC-elevated restart.
+
+## 2026-10-10 — GPT round 3 remediation (F01 nested config, F05, F07, F09, PS01)
+* **Evidence:** GPT-PM verification of 93f86c2 = REQUEST_CHANGES (1 BLOCKER, 4 MAJOR; ND01 verified). Detail:
+  `docs/v2_2/commit-notes/2026-10-10-gpt-review-round2.md` (section "Round 3 remediation").
+* **Decision:** effective git config is read from git itself (repo scopes untrusted, system/global trusted); strict EDMX/EDM
+  namespace validation; ownership provenance fixed at execution time + retired on verified rollback; detached trees held by
+  named kernel jobs re-opened after restart; script cache quotas are admission limits.
+* **Verification:** full suite 1440 passed, 4 skipped (agent-run, no CI).
