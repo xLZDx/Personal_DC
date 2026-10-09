@@ -20,7 +20,10 @@ Findings ids: `APACHE_NOT_FOUND`, `APACHE_SERVICE_NOT_RUNNING`, `APACHE_CONFIG_I
 `ODATA_DISABLED`, `IB_FILE_PATH_MISSING`, `IB_CONNECTION_MISSING`, `LISTEN_PORT_NOT_ACCEPTING`, `ONEC_PLATFORM_NOT_FOUND`.
 
 Credentials: connection strings are redacted (`Usr`, `Pwd`), never logged. For authenticated OData the owner provisions a
-DPAPI secret `%LOCALAPPDATA%\Personal_DC_V2\secrets\odata-<ref>.dpapi` (content `user:password`, protected with the entropy
-`personal-dc-v2.winops`) and the caller passes only `credential_ref`.
+DPAPI secret `%LOCALAPPDATA%\Personal_DC_V2\secrets\odata-<ref>.dpapi` (JSON with user, password and the BOUND endpoint scheme/host/port/publication, protected with the entropy
+`personal-dc-v2.winops`), created by `python -m dc_v2.winops.approve set-odata-credential <ref> --endpoint <odata base url>`.
+The caller passes only `credential_ref`; a probe to any other endpoint never receives the secret, and unbound legacy
+`user:password` blobs are refused. Recovery verdicts: HEALTHY only for HTTP 2xx with valid OData metadata; 401/403, 404,
+5xx and malformed metadata are reported separately.
 
 Out of scope / manual: editing `httpd.conf`, re-publishing with `webinst`, platform upgrades, database repair.

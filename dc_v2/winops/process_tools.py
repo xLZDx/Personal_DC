@@ -157,6 +157,16 @@ def guard_git_args(args: list[str]) -> tuple[list[str], bool]:
                          "--git-dir", "--work-tree", "--exec-path", "--config-env")) or a == "-x" or a == "-c"
            for a in lowered):
         raise PolicyError("GIT_PROGRAM_OPTION_NOT_ALLOWED")
+    for a in lowered[1:]:
+        if a == "--":
+            break
+        if a.startswith("--"):
+            opt = a[2:].split("=", 1)[0]
+            # git accepts unambiguous abbreviations of long options: block every spelling of the ones below.
+            if (len(opt) >= 2 and "output".startswith(opt)) or opt.startswith("output")                     or (len(opt) >= 4 and "no-index".startswith(opt)) or opt.startswith("open-files-in-pager")                     or (len(opt) >= 3 and "open-files-in-pager".startswith(opt)):
+                raise PolicyError("GIT_OUTPUT_OR_NOINDEX_OPTION_NOT_ALLOWED")
+        elif a.startswith("-") and len(a) > 1 and (a[1] in "oO" or "o" in a[1:2]):
+            raise PolicyError("GIT_OUTPUT_OR_NOINDEX_OPTION_NOT_ALLOWED")
     sub = lowered[0]
     if sub == "push" and any(a in ("-f", "--force", "--delete", "-d", "--mirror", "--prune") or a.startswith("--force")
                              or a.startswith("+") or a.startswith(":") or (a.startswith("-") and not a.startswith("--") and "f" in a)
@@ -237,7 +247,7 @@ def _launch(*, kind: str, label: str, argv: list[str] | None, cmdline: str | Non
         "exe": str(exe_path), "summary": redact(summary), "cwd": str(cwd), "owner": procs.current_user(),
         "approval_id": approval_id, "started_at": iso(), "ended_at": None, "pid": None, "created": None,
         "timeout_s": timeout_s, "exit_code": None, "stop_reason": None, "output_truncated": False,
-        "children_seen": [], "recovered": False, "job_assigned": False, "kill_verified": None,
+        "children_seen": [], "orphans": [], "recovered": False, "job_assigned": False, "kill_verified": None,
     }
     atomic_write_json(directory / "meta.json", meta)          # durable BEFORE anything can run
     audit("process.start", "START", process_id=pid_id, kind=kind, exe=str(exe_path), cwd=str(cwd), mode=mode,
@@ -335,6 +345,15 @@ def _finalize(managed: Managed, exit_code: int | None, state: str) -> None:
             with contextlib.suppress(Exception):
                 if managed.kill_orphans:
                     job.terminate()
+                else:       # explicit detach: remember descendants (pid + creation time) so they stay controllable
+                    orphans = []
+                    for pid in job.pids():
+                        created = procs.creation_time(pid)
+                        if pid != managed.meta.get("pid") and created and len(orphans) < 100:
+                            orphans.append({"pid": pid, "created": created})
+                    managed.meta["orphans"] = orphans
+                    with managed.lock:
+                        managed.save()
                 job.close()
         _audit_quiet("process.end", managed.meta["state"], process_id=managed.meta["id"], exit_code=exit_code,
                      kill_verified=managed.meta.get("kill_verified"))
@@ -487,12 +506,34 @@ def wait_done(managed: Managed, timeout: float) -> bool:
     return managed.done.wait(timeout)
 
 
+def _stop_orphans(managed: Managed) -> list[int]:
+    """Terminate recorded detached descendants whose (pid, creation time) identity still matches."""
+    stopped: list[int] = []
+    remaining = []
+    for item in managed.meta.get("orphans") or []:
+        pid, created = item.get("pid"), item.get("created")
+        if pid and created and procs.is_alive(pid, created):
+            with contextlib.suppress(Exception):
+                procs.terminate_tree(pid, created)
+            if procs.is_alive(pid, created):
+                remaining.append(item)
+            else:
+                stopped.append(pid)
+    if stopped or remaining != (managed.meta.get("orphans") or []):
+        managed.meta["orphans"] = remaining
+        with managed.lock, contextlib.suppress(Exception):
+            managed.save()
+        audit("process.stop_orphans", "OK", process_id=managed.meta["id"], stopped=stopped, remaining=len(remaining))
+    return stopped
+
+
 def stop_managed(managed: Managed, reason: str = "stopped") -> dict[str, Any]:
     meta = managed.meta
     if meta["owner"] != procs.current_user():
         raise PolicyError("PROCESS_OWNER_MISMATCH")
     if meta["state"] in TERMINAL:
-        return {"id": meta["id"], "state": meta["state"], "already_ended": True}
+        return {"id": meta["id"], "state": meta["state"], "already_ended": True,
+                "orphans_stopped": _stop_orphans(managed)}
     pid, created = meta["pid"], meta["created"]
     if not (pid and created and procs.is_alive(pid, created)):
         code = managed.popen.poll() if managed.popen is not None else None
@@ -521,70 +562,66 @@ def _decode(window: bytes) -> str:
         return window.decode("utf-8", errors="replace")
 
 
+_CANON_CACHE: dict[str, tuple[tuple[int, int, bool], bytes, int]] = {}
+_CANON_LOCK = threading.Lock()
+
+
+def _canonical_output(path: Path, finished: bool) -> tuple[bytes, int]:
+    """The redacted, UTF-8 representation of a stream that every page is cut from.
+
+    Redaction runs over the WHOLE visible stream, never over a page, so no offset/length combination can
+    start after a context prefix (``password=``) and expose its value. While the process still runs only
+    complete lines are visible (a half-written secret never appears); the raw size is returned for reporting.
+    """
+    if not path.exists():
+        return b"", 0
+    st = path.stat()
+    key = (st.st_size, st.st_mtime_ns, finished)
+    with _CANON_LOCK:
+        cached = _CANON_CACHE.get(str(path))
+        if cached and cached[0] == key:
+            return cached[1], cached[2]
+    raw = path.read_bytes()[:st.st_size]
+    if not finished:
+        raw = raw[:raw.rfind(b"\n") + 1]
+    canonical = redact_text(_decode(raw)).encode("utf-8")
+    with _CANON_LOCK:
+        if len(_CANON_CACHE) > 64:
+            _CANON_CACHE.clear()
+        _CANON_CACHE[str(path)] = (key, canonical, st.st_size)
+    return canonical, st.st_size
+
+
 def read_output(managed: Managed, stream: str = "stdout", offset: int = 0, max_bytes: int = 16384) -> dict[str, Any]:
+    """Page the canonical redacted output; offsets count bytes of that redacted UTF-8 text."""
     if stream not in ("stdout", "stderr"):
         raise PolicyError("INVALID_STREAM")
     if type(offset) is not int or offset < 0:
         raise PolicyError("INVALID_OFFSET")
-    cap = limit("max_page_bytes")
-    max_bytes = max(1, min(int(max_bytes), cap))
-    path = managed.dir / (stream + ".log")
-    size = path.stat().st_size if path.exists() else 0
+    max_bytes = max(1, min(int(max_bytes), limit("max_page_bytes")))
+    finished = managed.meta["state"] in TERMINAL
+    data, raw_size = _canonical_output(managed.dir / (stream + ".log"), finished)
+    size = len(data)
     if offset > size:
         raise PolicyError("OFFSET_BEYOND_END")
-    with path.open("rb") as handle:
-        handle.seek(offset)
-        window = handle.read(max_bytes)
-    end = offset + len(window)
-    # Page boundaries only matter for UTF-8; pure-OEM output never contains valid multi-byte sequences,
-    # so the alignment guard below is applied exactly when the data is valid UTF-8.
-    if window and (window[0] & 0xC0) == 0x80 and _is_utf8_stream(path, size):
+    end = min(offset + max_bytes, size)
+    if offset < size and (data[offset] & 0xC0) == 0x80:
         raise PolicyError("OFFSET_NOT_CHARACTER_ALIGNED")
-    if end < size and _is_utf8_stream(path, size):  # trim an incomplete trailing UTF-8 sequence
-        cut = len(window)
-        for back in range(1, min(4, len(window)) + 1):
-            byte = window[-back]
-            if byte & 0xC0 != 0x80:
-                need = 4 if byte >= 0xF0 else 3 if byte >= 0xE0 else 2 if byte >= 0xC0 else 1
-                if need > back:
-                    cut = len(window) - back
-                break
-        if cut == 0 and window:
-            raise PolicyError("PAGE_LIMIT_TOO_SMALL")
-        window = window[:cut]
-    text = redact_text(_decode(window))
-    next_offset = offset + len(window)
+    while end < size and end > offset and (data[end] & 0xC0) == 0x80:   # never split a character
+        end -= 1
+    if end == offset and offset < size:
+        raise PolicyError("PAGE_LIMIT_TOO_SMALL")
+    window = data[offset:end]
     finished = managed.meta["state"] in TERMINAL
-    return {"id": managed.meta["id"], "stream": stream, "offset": offset, "next_offset": next_offset,
-            "size": size, "text": text, "eof": finished and next_offset >= size,
+    return {"id": managed.meta["id"], "stream": stream, "offset": offset, "next_offset": end,
+            "size": size, "text": window.decode("utf-8", errors="replace"), "eof": finished and end >= size,
             "state": managed.meta["state"], "output_truncated": bool(managed.meta.get("output_truncated"))}
-
-
-_UTF8_CACHE: dict[tuple[str, int], bool] = {}
-
-
-def _is_utf8_stream(path: Path, size: int) -> bool:
-    """True when the first 64 KiB decode as UTF-8 (ignoring a cut at the window end)."""
-    key = (str(path), min(size, 65536))
-    if key in _UTF8_CACHE:
-        return _UTF8_CACHE[key]
-    with path.open("rb") as handle:
-        head = handle.read(65536)
-    try:
-        head.decode("utf-8")
-        ok = True
-    except UnicodeDecodeError as exc:
-        ok = exc.start >= len(head) - 3 and size > len(head)
-    if len(_UTF8_CACHE) > 256:
-        _UTF8_CACHE.clear()
-    _UTF8_CACHE[key] = ok
-    return ok
 
 
 def public_meta(meta: dict[str, Any]) -> dict[str, Any]:
     keys = ("id", "kind", "label", "state", "mode", "exe", "cwd", "summary", "owner", "started_at", "ended_at",
             "pid", "timeout_s", "exit_code", "stop_reason", "output_truncated", "children_seen", "recovered",
-            "approval_id", "job_assigned", "kill_verified")
+            "approval_id", "job_assigned", "kill_verified", "orphans")
     return {k: meta.get(k) for k in keys}
 
 
@@ -637,10 +674,12 @@ def launch_params(exe_path: Path, args: list[str], cwd: Path, timeout: int, env:
 
 def process_start(executable: str, args: list[str] | None = None, cwd: str = "", timeout_s: int = 3600,
                   mode: str = WORKSPACE_WRITE, env: dict[str, str] | None = None, label: str = "",
-                  approval_id: str | None = None) -> dict[str, Any]:
+                  approval_id: str | None = None, detach: bool = False) -> dict[str, Any]:
     """Start a long-running managed process (argument vector, no shell, bounded output).
 
     Only git (local subcommands) runs without approval; every other executable needs an operator approval.
+    By default the whole process tree dies when the root exits. ``detach=true`` lets descendants outlive the
+    root; they are recorded (pid + creation time) and ``process_stop`` still terminates them later.
     """
     args = list(args or [])
     if len(args) > 100 or any(not isinstance(a, str) or "\x00" in a or len(a) > 8192 for a in args):
@@ -657,12 +696,15 @@ def process_start(executable: str, args: list[str] | None = None, cwd: str = "",
         args, free = guard_git_args(args)
     timeout = max(1, min(int(timeout_s), limit("max_process_lifetime_s")))
     params = launch_params(exe_path, args, workdir, timeout, env, mode)
-    pending = authorize_launch(mode, exe_path, environment, params, approval_id, force_approval=not free)
+    if detach:
+        params["detach"] = True
+    pending = authorize_launch(mode, exe_path, environment, params, approval_id,
+                               force_approval=(not free) or detach)
     if pending:
         return pending
     managed = launch(kind="process", label=label or exe_path.name, argv=args, cmdline=None, exe_path=exe_path,
                      cwd=workdir, env=environment, timeout_s=timeout, mode=mode, approval_id=approval_id,
-                     summary=params, kill_orphans=False)
+                     summary=params, kill_orphans=not detach)
     return {"status": "STARTED", **public_meta(managed.meta)}
 
 

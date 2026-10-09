@@ -7,7 +7,7 @@ mean "ask the owner" — see `ARCHITECTURE.md §3`.
 | Tool | Purpose |
 |---|---|
 | `command_execute(command, shell, argv, cwd, timeout_s, mode, env, approval_id, max_chars)` | run to completion. `shell`: `catalog` (legacy aliases: python_version, whoami, hostname, ipconfig, network_ports, processes, services, systeminfo, disk_free), `powershell` (EncodedCommand, UTF-8), `cmd`, `exec` (argv, no shell) |
-| `command_start / command_status / command_output / command_cancel` | background command lifecycle; output paged by UTF-8-aligned byte offsets |
+| `command_start / command_status / command_output / command_cancel` | background command lifecycle; output paged by byte offsets of a canonical REDACTED UTF-8 text (redaction runs over the whole stream before paging) |
 | `command_history(limit_rows, state)` | recent commands, redacted summaries |
 
 `read_only`: catalog, allow-listed system exes with validated args, or a PowerShell pipeline of allow-listed `Get-*`
@@ -15,7 +15,7 @@ cmdlets with literal parameters (no `;&$(){}<>`, no scriptblocks, CIM classes al
 the policy roots; shells/unknown exes need approval. Timeout kills the whole tree (`state: timed_out`).
 
 ## Processes
-`process_list`, `process_inspect(pid)`, `process_start(executable,args,cwd,timeout_s,mode,env,label,approval_id)`,
+`process_list`, `process_inspect(pid)`, `process_start(executable,args,cwd,timeout_s,mode,env,label,approval_id,detach=false)`,
 `process_status`, `process_output`, `process_stop`. Only managed ids can be stopped. Identity = pid + creation time.
 
 ## Services

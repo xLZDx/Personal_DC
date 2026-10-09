@@ -45,6 +45,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("verify-audit")
     cred = sub.add_parser("set-odata-credential")
     cred.add_argument("ref")
+    cred.add_argument("--endpoint", required=True,
+                      help="OData base URL the credential is BOUND to, e.g. http://127.0.0.1:8080/mypub/odata/standard.odata")
     for name in ("show", "grant", "deny"):
         p = sub.add_parser(name)
         p.add_argument("approval_id")
@@ -69,10 +71,18 @@ def main(argv: list[str] | None = None) -> int:
             password = getpass.getpass("OData password: ")
             if not user or ":" in user or not password:
                 raise PolicyError("INVALID_CREDENTIAL")
+            from urllib.parse import urlsplit
+            parts = urlsplit(args.endpoint)
+            segment = parts.path.strip("/").split("/", 1)[0]
+            if parts.scheme not in ("http", "https") or not parts.hostname or not segment                     or parts.username or parts.password:
+                raise PolicyError("INVALID_ENDPOINT")
+            binding = {"user": user, "password": password, "scheme": parts.scheme, "host": parts.hostname.casefold(),
+                       "port": parts.port or (443 if parts.scheme == "https" else 80), "publication": segment}
             path = secret_path("odata-" + args.ref)
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(dpapi_protect((user + ":" + password).encode("utf-8")))
-            audit("odata.credential", "PROVISIONED", actor="operator-cli", ref=args.ref)
+            path.write_bytes(dpapi_protect(json.dumps(binding).encode("utf-8")))
+            audit("odata.credential", "PROVISIONED", actor="operator-cli", ref=args.ref,
+                  endpoint=f"{binding['scheme']}://{binding['host']}:{binding['port']}/{segment}")
             print("credential stored (DPAPI, current user)")
         else:
             if not valid_id(args.approval_id) or not args.approval_id.startswith("req-"):

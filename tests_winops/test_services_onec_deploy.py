@@ -626,7 +626,7 @@ def test_repair_refuses_ambiguous_publication_names(apache):
 # ================================================================== recovery
 @pytest.fixture()
 def probe_result(monkeypatch):
-    holder = {"value": {"reachable": True, "status": 200}, "calls": 0}
+    holder = {"value": {"reachable": True, "status": 200, "metadata": {"entity_types": 1, "entity_sets": 1}}, "calls": 0}
 
     def fake(*args, **kwargs):
         holder["calls"] += 1
@@ -655,7 +655,7 @@ def test_recovery_apply_needs_approval_bound_to_the_steps(apache, approvals_read
 def test_recovery_reports_unhealthy_endpoint_after_applying(apache, approvals_ready, probe_result):
     probe_result["value"] = {"reachable": False, "error": "ConnectionRefusedError"}
     rid = _grant(onec_tools.odata_recovery("acc", apply=True))
-    assert onec_tools.odata_recovery("acc", apply=True, approval_id=rid)["status"] == "APPLIED_BUT_ENDPOINT_NOT_HEALTHY"
+    assert onec_tools.odata_recovery("acc", apply=True, approval_id=rid)["status"] == "APPLIED_BUT_ENDPOINT_NOT_HEALTHY:UNREACHABLE"
 
 
 def test_recovery_stops_at_first_failed_step_and_restores(apache, approvals_ready, probe_result, monkeypatch):
@@ -873,7 +873,7 @@ def test_odata_probe_returns_counts_never_records(odata_server, isolated_state):
 def test_odata_probe_credential_is_sent_but_never_stored_or_returned(odata_server, isolated_state):
     path = common.secret_path("odata-ref1")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(common.dpapi_protect(("odatauser:" + SENT_ODATA_PW).encode("utf-8")))
+    path.write_bytes(common.dpapi_protect(_bound_blob(odata_server.base, "odatauser", SENT_ODATA_PW)))
     odata_server.routes[odata_server.path("$metadata")] = (200, {"Content-Type": "application/xml"}, EDMX)
     result = onec_tools.odata_probe(url=odata_server.base, credential_ref="ref1")
     header = odata_server.seen[0][1]["Authorization"]
@@ -894,8 +894,31 @@ def test_odata_probe_credential_reference_errors_send_nothing(odata_server):
     path = common.secret_path("odata-nocolon")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(common.dpapi_protect(b"nocolonhere"))
-    with pytest.raises(PolicyError, match="CREDENTIAL_REF_MALFORMED"):
+    with pytest.raises(PolicyError, match="CREDENTIAL_REF_NOT_BOUND_REPROVISION_WITH_ENDPOINT"):
         onec_tools.odata_probe(url=odata_server.base, credential_ref="nocolon")
+    assert odata_server.seen == []
+
+
+def _bound_blob(base, user, password, **override):
+    from urllib.parse import urlsplit
+    parts = urlsplit(base)
+    data = {"user": user, "password": password, "scheme": parts.scheme, "host": parts.hostname, "port": parts.port,
+            "publication": parts.path.strip("/").split("/")[0]}
+    data.update(override)
+    return json.dumps(data).encode("utf-8")
+
+
+def test_odata_credential_is_never_sent_to_an_endpoint_it_is_not_bound_to(odata_server, isolated_state):
+    other = odata_server.base.replace("/acc/", "/other/")
+    path = common.secret_path("odata-bound1")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(common.dpapi_protect(_bound_blob(odata_server.base, "u", "pw-bound")))
+    odata_server.routes[odata_server.path("$metadata")] = (200, {}, EDMX)
+    with pytest.raises(PolicyError, match="CREDENTIAL_NOT_BOUND_TO_THIS_ENDPOINT"):
+        onec_tools.odata_probe(url=other, credential_ref="bound1")           # other publication
+    wrong_port = odata_server.base.replace("127.0.0.1:", "127.0.0.1:1")      # other port (never reached)
+    with pytest.raises((PolicyError, ValueError)):
+        onec_tools.odata_probe(url=wrong_port, credential_ref="bound1")
     assert odata_server.seen == []
 
 

@@ -45,3 +45,11 @@ Durable decisions and evidence only. Newest entries at the bottom. Full per-comm
   `personal-dc-v2` restarted by the supervisor. No new tunnel/key/plugin.
 * **Evidence (FACT):** supervisor state `running`, backend 18766 and tunnel 18081 listening, authenticated MCP probe PASS with
   `tool_count: 59`. ChatGPT-side visibility and `approve init` remain operator steps.
+
+## 2026-10-09 — GPT final review round 1 (REQUEST_CHANGES) remediation
+* **Evidence:** GPT reviewed 24ffa92: 2 BLOCKER (F01 git `--output` write bypass, F02 paginated-output redaction bypass) and
+  8 MAJOR (F03–F10). One broad sweep per policy; this commit fixes exactly F01–F10 (+ direct regressions). Detail:
+  `docs/v2_2/commit-notes/2026-10-09-gpt-review-round1.md`.
+* **Decision:** output paging uses a canonical redacted representation (offset semantics change to redacted bytes).
+* **Decision:** OData credentials are endpoint-bound; legacy unbound blobs are refused (operator must re-provision).
+* **Decision:** default process-tree lifetime = root lifetime; detaching is explicit and approval-bound.

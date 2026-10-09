@@ -365,3 +365,161 @@ def test_stop_refuses_records_owned_by_another_user(isolated_state, work):
                   ended_at=common.iso(), exit_code=0)
     with pytest.raises(PolicyError, match="PROCESS_OWNER_MISMATCH"):
         pt.process_stop("prc-eeeeeeeeeeeeeeee")
+
+
+# ------------------------------------------- canonical redacted paging (F02)
+SECRET_PROGRAM = (
+    "print('start-marker');"
+    "print('password=SENSITIVE_VALUE_123');"
+    "print('Authorization: Bearer abcDEF123456tokenSECRETxyz');"
+    "print('Server=db01;Database=acc;User Id=sa;Password=ConnSECRETvalue987;');"
+    "print('end-marker')")
+SECRET_VALUES = ("SENSITIVE_VALUE_123", "abcDEF123456tokenSECRETxyz", "ConnSECRETvalue987")
+
+
+def _all_pages(managed, length, start=0):
+    offset, text = start, ""
+    for _ in range(2000):
+        page = pt.read_output(managed, "stdout", offset, length)
+        text += page["text"]
+        if page["next_offset"] == offset or page["eof"]:
+            break
+        offset = page["next_offset"]
+    return text
+
+
+def _assert_no_secret(text):
+    for secret in SECRET_VALUES:
+        assert secret not in text, secret
+
+
+def test_paging_never_exposes_a_secret_for_any_offset_and_length(work):
+    managed = pt.get_managed(_run(work, SECRET_PROGRAM)["id"])
+    full = _all_pages(managed, 4096)
+    _assert_no_secret(full)
+    assert "start-marker" in full and "end-marker" in full and "password=***" in full     # control: redaction, not loss
+    size = pt.read_output(managed, "stdout", 0, 1)["size"]
+    assert size == len(full.encode("utf-8")) and size > 100                               # offsets are redacted-text offsets
+    for length in range(1, 65):
+        for offset in range(0, size + 1):
+            _assert_no_secret(pt.read_output(managed, "stdout", offset, length)["text"])
+        _assert_no_secret(_all_pages(managed, length))                                   # concatenation of pages too
+    for start in range(0, size, 3):                                                        # tails from every start
+        tail = _all_pages(managed, 7, start)
+        _assert_no_secret(tail)
+        assert tail == full[start:]
+
+
+def test_paging_stays_redacted_after_cache_clear_and_recovery(isolated_state, work):
+    out = _run(work, SECRET_PROGRAM)
+    managed = pt.get_managed(out["id"])
+    pt._CANON_CACHE.clear()
+    _assert_no_secret(_all_pages(managed, 5))
+    for offset in range(0, pt.read_output(managed, "stdout", 0, 1)["size"] + 1):
+        _assert_no_secret(pt.read_output(managed, "stdout", offset, 9)["text"])
+    with pt._REG_LOCK:
+        pt._REGISTRY.clear()
+    pt._RECOVERED = False
+    pt._CANON_CACHE.clear()
+    pt.ensure_recovered()
+    historical = pt.get_managed(out["id"])
+    assert historical is not managed
+    _assert_no_secret(_all_pages(historical, 3))
+    assert "password=***" in _all_pages(historical, 4096)
+    assert SECRET_VALUES[0] in (managed.dir / "stdout.log").read_text(encoding="utf-8")   # raw log keeps it; only reads redact
+
+
+def test_running_process_exposes_only_complete_lines(work):
+    code = ("import sys,time;print('done-line',flush=True);"
+            "sys.stdout.write('password=HALFWRITTENSECRET');sys.stdout.flush();time.sleep(60)")
+    started = _start_process(work, code)
+    managed = pt.get_managed(started["id"], "process")
+    assert _wait(lambda: (managed.dir / "stdout.log").exists()
+                 and b"HALFWRITTEN" in (managed.dir / "stdout.log").read_bytes(), 20)
+    page = pt.read_output(managed, "stdout", 0, 4096)
+    assert page["text"].strip() == "done-line" and page["eof"] is False
+    assert page["size"] == len(page["text"].encode("utf-8")) and page["next_offset"] == page["size"]
+    assert "HALFWRITTEN" not in page["text"]
+    pt.process_stop(started["id"])
+    after = pt.read_output(managed, "stdout", 0, 4096)                                    # finished: remainder becomes visible
+    assert "HALFWRITTENSECRET" not in after["text"] and "password=***" in after["text"] and after["eof"] is True
+
+
+# ------------------------------------------------- tree kill / detach / orphans (F09)
+# The root prints its child's pid, waits until the harness has seen it, and exits; the child outlives it
+# unless the managed layer kills the tree.
+ROOT_EXITS_LEAVING_CHILD = (
+    "import subprocess,sys,time;"
+    "g=subprocess.Popen([sys.executable,'-c','import time;time.sleep(120)']);"
+    "print(g.pid,flush=True);time.sleep(2)")
+
+
+def test_default_process_start_kills_the_tree_when_the_root_exits(work):
+    started = _start_process(work, ROOT_EXITS_LEAVING_CHILD)
+    assert "detach" not in pt.get_managed(started["id"]).meta["summary"]
+    child = _printed_pid(started["id"])
+    managed = pt.get_managed(started["id"], "process")
+    assert managed.done.wait(30)
+    assert managed.meta["state"] == "exited" and managed.kill_orphans is True and managed.meta["orphans"] == []
+    assert _wait(lambda: not procs.is_alive(child), 15)             # child pid printed by the parent is dead
+
+
+def _detached(work, approvals_ready_fixture=None):
+    pending = pt.process_start(PY, ["-c", ROOT_EXITS_LEAVING_CHILD], cwd=str(work), timeout_s=120, detach=True)
+    assert pending["status"] == "APPROVAL_REQUIRED", pending
+    return pending
+
+
+def test_detach_always_requires_an_approval_bound_to_detach(work, approvals_ready):
+    # PY is a trusted dev tool in this module, so only detach can be the reason approval is demanded.
+    plain = pt.process_start(PY, ["-c", "pass"], cwd=str(work), timeout_s=120)
+    assert plain["status"] == "STARTED"
+    pending = _detached(work)
+    request = json.loads((common.approvals_dir() / (pending["approval_id"] + ".json")).read_text(encoding="utf-8"))
+    assert '"detach":true' in request["params_display"].replace(" ", "")
+    common.grant_approval(pending["approval_id"])
+    # the non-detached launch of the same command needs no approval at all, so the detach grant is never consumed by it
+    plain_same = pt.process_start(PY, ["-c", ROOT_EXITS_LEAVING_CHILD], cwd=str(work), timeout_s=120,
+                                  approval_id=pending["approval_id"])
+    assert plain_same["status"] == "STARTED"
+    assert not (common.approvals_dir() / (pending["approval_id"] + ".used")).exists()
+
+
+def test_detached_orphans_are_recorded_stopped_and_survive_recovery(isolated_state, work, approvals_ready):
+    pending = _detached(work)
+    common.grant_approval(pending["approval_id"])
+    started = pt.process_start(PY, ["-c", ROOT_EXITS_LEAVING_CHILD], cwd=str(work), timeout_s=120, detach=True,
+                               approval_id=pending["approval_id"])
+    assert started["status"] == "STARTED"
+    child = _printed_pid(started["id"])
+    managed = pt.get_managed(started["id"], "process")
+    assert managed.done.wait(30) and managed.kill_orphans is False
+    assert procs.is_alive(child)                                        # detach: the descendant outlived the root
+    orphans = managed.meta["orphans"]
+    assert child in [o["pid"] for o in orphans]                         # (a venv launcher may add an intermediate pid)
+    assert next(o for o in orphans if o["pid"] == child)["created"] == procs.creation_time(child)
+    assert _disk_meta(isolated_state / "procs" / started["id"])["orphans"] == orphans     # durable
+
+    # a restart (empty registry, recovery re-run) still knows the orphan and stops it by exact identity
+    with pt._REG_LOCK:
+        pt._REGISTRY.clear()
+    pt._RECOVERED = False
+    pt.ensure_recovered()
+    result = pt.process_stop(started["id"])
+    assert result["already_ended"] is True and child in result["orphans_stopped"]
+    assert _wait(lambda: not procs.is_alive(child), 15)
+    assert _disk_meta(isolated_state / "procs" / started["id"])["orphans"] == []
+    assert pt.process_stop(started["id"])["orphans_stopped"] == []
+
+
+def test_orphan_stop_never_kills_a_process_with_a_different_creation_time(isolated_state, work):
+    proc = _foreign_process()
+    try:
+        directory = _write_record(isolated_state, "prc-7777777777777777", work, state="exited", ended_at=common.iso(),
+                                  exit_code=0, orphans=[{"pid": proc.pid, "created": procs.creation_time(proc.pid) + 1}])
+        result = pt.process_stop("prc-7777777777777777")
+        assert result["already_ended"] is True and result["orphans_stopped"] == []
+        assert proc.poll() is None                                       # recycled-pid look-alike is left alone
+        assert _disk_meta(directory)["orphans"] == []
+    finally:
+        proc.kill()

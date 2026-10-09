@@ -64,7 +64,7 @@ def clean_process_registry():
                     with contextlib.suppress(Exception):
                         managed.popen.wait(timeout=5)
         pt._RECOVERED = False
-        pt._UTF8_CACHE.clear()
+        pt._CANON_CACHE.clear()
 
     _reset(kill=False)
     yield

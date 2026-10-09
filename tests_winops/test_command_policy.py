@@ -429,3 +429,26 @@ def test_git_hardening_and_auto_trust_classification():
 def test_command_catalog_is_fixed_and_contains_no_shells():
     assert "whoami" in ct.CATALOG
     assert not [v for v in ct.CATALOG.values() if Path(v[0]).name.casefold() in ("cmd.exe", "powershell.exe")]
+
+
+# ----------------------------------- git: output-file / no-index options (F01)
+@pytest.mark.parametrize("args", [
+    ["log", "--output=x.txt"], ["log", "--output", "x.txt"], ["diff", "--out=x.txt"], ["diff", "--ou=x"],
+    ["log", "--outp=x"], ["log", "--outpu=x"], ["log", "--OUTPUT=x"], ["log", "--output-indicator-new=+"],
+    ["diff", "-ox.txt"], ["diff", "-o", "x.txt"], ["log", "-Ox.txt"], ["grep", "-O", "less"],
+    ["diff", "--no-index", "a", "b"], ["diff", "--no-i", "a", "b"], ["diff", "--no-ind", "a", "b"],
+    ["diff", "--no-inde=1"], ["grep", "--open-files-in-pager"], ["grep", "--open-files-in-pager=calc"],
+    ["grep", "--open-files-in-p=calc"], ["grep", "--ope", "x"],
+], ids=lambda a: " ".join(a))
+def test_git_output_file_and_noindex_options_denied(args):
+    with pytest.raises(PolicyError, match="GIT_OUTPUT_OR_NOINDEX_OPTION_NOT_ALLOWED"):
+        pt.guard_git_args(args)
+
+
+@pytest.mark.parametrize("args", [
+    ["log", "--oneline", "-n", "3"], ["status", "-s"], ["diff", "--stat"], ["diff", "--no-color"],
+    ["log", "--format=%H", "--", "--output=x"], ["log", "--", "-o", "--no-index"],
+])
+def test_git_benign_options_and_args_after_double_dash_are_not_inspected(args):
+    hardened, trusted = pt.guard_git_args(args)
+    assert trusted is True and hardened[-len(args):] == args

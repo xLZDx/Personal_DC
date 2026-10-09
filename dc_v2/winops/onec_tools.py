@@ -564,6 +564,29 @@ def _odata_url(publication: str, url: str, path: str, server_root: str, with_cre
     return base + "/"
 
 
+def _bound_basic_auth(blob: bytes, target: str) -> str:
+    """Authorization header for a credential that is BOUND to one scheme/host/port/publication.
+
+    The operator provisions the binding with the credential (``approve set-odata-credential``); a target
+    that does not match it never receives the secret. Unbound (legacy ``user:password``) blobs are refused.
+    """
+    try:
+        data = json.loads(blob.decode("utf-8"))
+        user, password = str(data["user"]), str(data["password"])
+        scheme, host, port, pub = str(data["scheme"]), str(data["host"]).casefold(), int(data["port"]), str(data["publication"])
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError) as exc:
+        raise PolicyError("CREDENTIAL_REF_NOT_BOUND_REPROVISION_WITH_ENDPOINT") from exc
+    parts = urllib.parse.urlsplit(target)
+    segment = urllib.parse.unquote(parts.path.strip("/").split("/", 1)[0])
+    default = 443 if parts.scheme == "https" else 80
+    if (parts.scheme, (parts.hostname or "").casefold(), parts.port or default, segment.casefold()) !=             (scheme, host, port, pub.casefold()):
+        audit("odata.probe", "CREDENTIAL_BINDING_MISMATCH", url=redact_text(target))
+        raise PolicyError("CREDENTIAL_NOT_BOUND_TO_THIS_ENDPOINT")
+    if ":" in user:
+        raise PolicyError("CREDENTIAL_REF_MALFORMED")
+    return "Basic " + base64.b64encode((user + ":" + password).encode("utf-8")).decode("ascii")
+
+
 def odata_probe(publication: str = "", path: str = "$metadata", url: str = "", credential_ref: str = "",
                 timeout_s: int = 10, server_root: str = "") -> dict[str, Any]:
     """GET-probe a local 1C OData endpoint. Returns status/timing and metadata names or record COUNT only.
@@ -580,10 +603,7 @@ def odata_probe(publication: str = "", path: str = "$metadata", url: str = "", c
         blob = load_secret("odata-" + credential_ref)
         if not blob:
             raise PolicyError("CREDENTIAL_REF_NOT_PROVISIONED")
-        blob = blob.strip()
-        if b":" not in blob:
-            raise PolicyError("CREDENTIAL_REF_MALFORMED")
-        headers["Authorization"] = "Basic " + base64.b64encode(blob).decode("ascii")
+        headers["Authorization"] = _bound_basic_auth(blob, target)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)   # never via a system proxy
     started = time.monotonic()
     result: dict[str, Any] = {"url": redact_text(target), "credential_ref": credential_ref or None}
@@ -639,12 +659,18 @@ def _locate_vrd(publication: str, server_root: str) -> tuple[dict[str, Any], dic
     vrd = Path(pub["vrd"])
     if vrd.suffix.casefold() != ".vrd" or not vrd.is_file():
         raise PolicyError("VRD_NOT_FOUND")
-    roots = list(native_config()["publication_roots"]) + [install["server_root"]]
-    allowed = [Path(r).resolve(strict=False) for r in roots]
+    _check_vrd_path(vrd, [install["server_root"]])
+    return install, pub
+
+
+def _check_vrd_path(vrd: Path, extra_roots: list[str]) -> None:
+    """Every VRD mutation (repair, recovery, rollback) passes through here immediately before writing."""
+    if vrd.suffix.casefold() != ".vrd" or not vrd.is_file():
+        raise PolicyError("VRD_NOT_FOUND")
+    allowed = [Path(r).resolve(strict=False) for r in list(native_config()["publication_roots"]) + extra_roots]
     if not any(_is_under(vrd.resolve(strict=True), r) for r in allowed):
         raise PolicyError("VRD_OUTSIDE_PUBLICATION_ROOTS")
     assert_no_reparse_chain(Path(os.path.abspath(vrd)), allowed)
-    return install, pub
 
 
 def _mask_comments(text: str) -> str:
@@ -733,6 +759,7 @@ def _restore(manifest: dict[str, Any]) -> bool:
 def _apply_vrd_change(install: dict[str, Any], plan: dict[str, Any], new_bytes: bytes) -> dict[str, Any]:
     """Single implementation of 'back up, write, validate, auto-restore' for repair AND recovery."""
     vrd = Path(plan["vrd"])
+    _check_vrd_path(vrd, [install["server_root"]])
     if hashlib.sha256(vrd.read_bytes()).hexdigest() != plan["old_sha256"]:
         raise PolicyError("PUBLICATION_CHANGED_SINCE_PLAN")
     baseline = _configtest(install) if install["conf_exists"] else {"ok": True}
@@ -802,6 +829,7 @@ def _rollback_vrd(backup_id: str, apply: bool, approval_id: str | None) -> dict[
         raise PolicyError("BACKUP_MANIFEST_INVALID")
     if hashlib.sha256(backup.read_bytes()).hexdigest() != manifest["sha256"]:
         raise PolicyError("BACKUP_INTEGRITY_FAILED")
+    _check_vrd_path(original, [i["server_root"] for i in discover_apache()[0]])
     current = hashlib.sha256(original.read_bytes()).hexdigest()
     plan = {"operation": "rollback", "backup_id": backup_id, "target": str(original), "restore_sha256": manifest["sha256"],
             "current_sha256": current}
@@ -810,6 +838,7 @@ def _rollback_vrd(backup_id: str, apply: bool, approval_id: str | None) -> dict[
     pending = approval_or_response("onec.repair", plan, approval_id, ELEVATED)
     if pending:
         return pending
+    _check_vrd_path(original, [i["server_root"] for i in discover_apache()[0]])
     if hashlib.sha256(original.read_bytes()).hexdigest() != current:
         raise PolicyError("PUBLICATION_CHANGED_SINCE_PLAN")
     safety = _backup_vrd(original, "pre-rollback")
@@ -873,6 +902,11 @@ def _recovery_plan(publication: str, server_root: str) -> dict[str, Any]:
     steps: list[dict[str, Any]] = []
     new_bytes = None
     if pub.get("exists") and not pub.get("error") and not pub.get("odata", {}).get("enabled"):
+        try:
+            _check_vrd_path(Path(pub["vrd"]), [install["server_root"]])
+        except PolicyError as exc:
+            return {**blocked, "install": install["server_root"], "publication": pub["name"],
+                    "notes": ["Publication descriptor refused by path policy: " + str(exc)]}
         prepared = _prepare_enable(install, pub)
         if prepared:
             step_plan, new_bytes, _diff = prepared
@@ -882,12 +916,30 @@ def _recovery_plan(publication: str, server_root: str) -> dict[str, Any]:
         steps.append({"step": "apache_start", "service": service["name"]})
     elif service:
         probe = odata_probe(pub["name"], "$metadata", timeout_s=8, server_root=server_root)
-        if not probe.get("reachable"):
+        verdict = _odata_verdict(probe)
+        if verdict in ("UNREACHABLE", "SERVER_ERROR"):
             steps.append({"step": "apache_restart", "service": service["name"]})
         else:
-            notes.append(f"OData probe status {probe.get('status')}")
+            notes.append(f"OData probe verdict {verdict} (HTTP {probe.get('status')}); a restart cannot fix this")
     return {"install": install["server_root"], "publication": pub["name"], "steps": steps, "notes": notes,
             "blocked": False, "_new_bytes": new_bytes, "_install": install}
+
+
+def _odata_verdict(probe: dict[str, Any]) -> str:
+    """HEALTHY only for HTTP 2xx with valid OData metadata; auth/404/malformed are distinct, never healthy."""
+    if not probe.get("reachable"):
+        return "UNREACHABLE"
+    status = int(probe.get("status") or 0)
+    if status in (401, 403):
+        return "AUTH_REQUIRED"
+    if status == 404:
+        return "PUBLICATION_NOT_FOUND"
+    if status >= 500:
+        return "SERVER_ERROR"
+    meta = probe.get("metadata")
+    if 200 <= status < 300 and isinstance(meta, dict) and "error" not in meta and meta.get("entity_sets", 0) >= 0             and "entity_types" in meta:
+        return "HEALTHY"
+    return "MALFORMED_OR_UNEXPECTED"
 
 
 def odata_recovery(publication: str = "", apply: bool = False, approval_id: str | None = None,
@@ -926,11 +978,12 @@ def odata_recovery(publication: str = "", apply: bool = False, approval_id: str 
             overall = "STOPPED_AT_FAILED_STEP"
             break
     final = odata_probe(plan["publication"], "$metadata", timeout_s=10, server_root=server_root)
-    if overall == "APPLIED" and not (final.get("reachable") and 200 <= final.get("status", 0) < 500):
-        overall = "APPLIED_BUT_ENDPOINT_NOT_HEALTHY"
+    verdict = _odata_verdict(final)
+    if overall == "APPLIED" and verdict != "HEALTHY":
+        overall = "APPLIED_AUTH_REQUIRED_UNVERIFIED" if verdict == "AUTH_REQUIRED" else "APPLIED_BUT_ENDPOINT_NOT_HEALTHY:" + verdict
     audit("odata.recovery", overall, publication=plan["publication"], steps=len(results),
-          final_status=final.get("status"))
-    return {"status": overall, "results": results, "final_probe": final}
+          final_status=final.get("status"), verdict=verdict)
+    return {"status": overall, "results": results, "final_probe": final, "verdict": verdict}
 
 
 def register_onec_tools(server: Any) -> None:

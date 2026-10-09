@@ -228,3 +228,39 @@ def test_elevated_mode_requires_a_fresh_approval_per_call(work, isolated_state):
     assert ct.command_execute(**kwargs, approval_id=pending["approval_id"])["exit_code"] == 0
     again = ct.command_execute(**kwargs)
     assert again["status"] == "APPROVAL_REQUIRED" and again["approval_id"] != pending["approval_id"]
+
+
+# ---------------------------- git --output / --no-index never reaches a launch (F01)
+GIT_ATTACKS = [["log", "--output={target}"], ["log", "--out={target}"], ["log", "--ou={target}"],
+               ["diff", "-o{target}"], ["diff", "--no-index", "a", "b"]]
+
+
+@pytest.mark.parametrize("template", GIT_ATTACKS, ids=lambda t: " ".join(t)[:30])
+def test_git_output_option_is_denied_on_every_launch_path_and_target_is_untouched(work, isolated_state, template):
+    target = work / "victim.cfg"
+    target.write_bytes(b"ORIGINAL-CONFIG")
+    args = [a.format(target=target) for a in template]
+    with pytest.raises(PolicyError, match="GIT_OUTPUT_OR_NOINDEX_OPTION_NOT_ALLOWED"):
+        pt.process_start("git.exe", args, cwd=str(work))
+    with pytest.raises(PolicyError, match="GIT_OUTPUT_OR_NOINDEX_OPTION_NOT_ALLOWED"):
+        ct.command_execute(shell="exec", argv=["git.exe", *args], cwd=str(work), mode="workspace_write")
+    with pytest.raises(PolicyError, match="GIT_OUTPUT_OR_NOINDEX_OPTION_NOT_ALLOWED"):
+        ct.command_start(shell="exec", argv=["git.exe", *args], cwd=str(work), mode="workspace_write")
+    assert target.read_bytes() == b"ORIGINAL-CONFIG"
+    assert not _started(isolated_state)                              # nothing was launched, no approval requested
+    assert not list((isolated_state / "approvals").glob("req-*.json"))
+
+
+def test_git_output_option_denied_even_with_a_pre_existing_git_config_hash_unchanged(work):
+    import hashlib
+    cfg = work / ".gitconfig-like"
+    cfg.write_bytes(b"[core]\n")
+    before = hashlib.sha256(cfg.read_bytes()).hexdigest()
+    with pytest.raises(PolicyError):
+        pt.process_start("git.exe", ["log", f"--output={cfg}"], cwd=str(work))
+    assert hashlib.sha256(cfg.read_bytes()).hexdigest() == before
+
+
+def test_python_still_requires_approval_next_to_the_git_guard(work):
+    assert _exec(work)["status"] == "APPROVAL_REQUIRED"
+    assert pt.process_start(PY, ["-c", "pass"], cwd=str(work))["status"] == "APPROVAL_REQUIRED"

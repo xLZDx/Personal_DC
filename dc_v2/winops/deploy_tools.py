@@ -27,7 +27,7 @@ from personal_dc.policy import PolicyError
 
 from . import process_tools as pt
 from .common import (ELEVATED, _is_under, approval_or_response, assert_no_reparse_chain, atomic_write_json, audit,
-                     digest_of, iso, limit, native_config, new_id, read_json, redact_text, safe_path,
+                     digest_of, file_lock, iso, limit, native_config, new_id, read_json, redact_text, safe_path,
                      state_subdir, threaded, utcnow, valid_id)
 from .sysrun import ps_json
 
@@ -301,6 +301,18 @@ def _check_plan_fresh(plan: dict[str, Any]) -> None:
 
 def deployment_apply(plan_id: str, approval_id: str | None = None, timeout_s: int = 3600) -> dict[str, Any]:
     """Run an approved plan: re-verify trust, stage + re-hash the installer, execute as a managed process."""
+    if not valid_id(plan_id) or not plan_id.startswith("dpl-"):
+        raise PolicyError("INVALID_PLAN_ID")
+    # The whole planned -> applying transition (state check, approval consumption, persist) is atomic per plan:
+    # a concurrent second call sees "applying" and is refused before its approval is consumed.
+    with file_lock(_plans() / (plan_id + ".lock")):
+        plan, pending = _begin_apply(plan_id, approval_id)
+    if pending:
+        return pending
+    return _run_apply(plan, plan_id, approval_id, timeout_s)
+
+
+def _begin_apply(plan_id: str, approval_id: str | None) -> tuple[dict[str, Any], dict[str, Any] | None]:
     plan = _load_plan(plan_id)
     if plan["state"] not in ("planned", "failed", "needs_elevation"):
         raise PolicyError("PLAN_NOT_APPLICABLE_IN_STATE:" + plan["state"])
@@ -321,18 +333,30 @@ def deployment_apply(plan_id: str, approval_id: str | None = None, timeout_s: in
         _install_dir(plan["install_dir"])   # re-validate (roots, protected prefixes, reparse points) at apply time
     pending = approval_or_response("deployment.apply", _bound(plan), approval_id, ELEVATED)
     if pending:
-        return pending
+        return plan, pending
     plan.update(state="applying", op="install", applying_at=iso(), reboot_pending_before=_reboot_pending())
     plan["history"].append({"at": iso(), "event": "applying"})
     _save_plan(plan)                        # persisted BEFORE the installer can run
+    return plan, None
+
+
+def _run_apply(plan: dict[str, Any], plan_id: str, approval_id: str | None, timeout_s: int) -> dict[str, Any]:
+    source = _installer_path(plan["installer"])
     stage_dir = state_subdir("staging") / plan_id
-    stage_dir.mkdir(parents=True, exist_ok=True)
     staged = stage_dir / source.name
-    shutil.copy2(source, staged)
-    if _sha256_file(staged) != plan["sha256"]:
-        plan.update(state="failed")
+    try:
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, staged)
+        if _sha256_file(staged) != plan["sha256"]:
+            raise PolicyError("STAGED_COPY_HASH_MISMATCH")
+    except (OSError, PolicyError) as exc:      # disk full, sharing violation, hash mismatch: nothing was launched
+        shutil.rmtree(stage_dir, ignore_errors=True)
+        plan["state"] = "failed"
+        plan["history"].append({"at": iso(), "event": "staging_failed", "reason": type(exc).__name__ + ":" + str(exc)[:100]})
         _save_plan(plan)
-        raise PolicyError("STAGED_COPY_HASH_MISMATCH")
+        audit("deployment.apply", "STAGING_FAILED", plan_id=plan_id, reason=type(exc).__name__)
+        return {"plan_id": plan_id, "state": "failed", "reason": "STAGING_FAILED:" + type(exc).__name__,
+                "note": "no installer was started; request a new approval to retry"}
     log = stage_dir / "install.log"
     exe, args = _argv_for(plan, staged, log)
     try:
@@ -439,6 +463,12 @@ def deployment_rollback(plan_id: str, approval_id: str | None = None, timeout_s:
         raise PolicyError("ROLLBACK_NOT_APPLICABLE_IN_STATE:" + plan["state"])
     if digest_of("deployment.apply", _bound(plan)) != plan["digest"]:
         raise PolicyError("PLAN_DIGEST_MISMATCH")
+    code = (plan.get("msi") or {}).get("product_code") or ""
+    owned = any(k.casefold().endswith(":" + code.casefold()) for k in plan.get("new_software_keys") or []) if code else False
+    if plan["state"] == "failed" or not owned:
+        return {"status": "NOT_SUPPORTED", "reason": "INSTALLATION_OWNERSHIP_NOT_PROVEN",
+                "manual": "Only a successfully completed install whose ProductCode appeared during this plan can be rolled "
+                          "back automatically; a failed or ambiguous install must be reviewed manually."}
     if plan.get("product_preexisting"):
         return {"status": "NOT_SUPPORTED", "reason": "PRODUCT_EXISTED_BEFORE_THIS_PLAN",
                 "manual": "This plan upgraded or repaired an existing product; uninstalling would remove the working one."}

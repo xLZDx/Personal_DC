@@ -1,9 +1,11 @@
 # Upgrade the EXISTING scheduled task Personal_DC_V2_Tunnel to the native supervisor.
 # - Does not create another task, tunnel or key. Non-elevated (RunLevel Limited), current user, at logon.
-# - Exports the current task XML first so the change is reversible:  -Rollback restores the last export.
+# - Exports the current task XML first so the change is reversible. -Rollback restores the immutable ORIGINAL
+#   (pre-cutover) task deterministically; -Rollback -Previous restores the newest snapshot that is NOT the native task.
+#   Re-running the updater never snapshots an already-native task, so rollback can never "restore" the new task.
 # - v1 (Personal_DC) is never touched.
 [CmdletBinding()]
-param([switch]$DryRun, [switch]$Rollback)
+param([switch]$DryRun, [switch]$Rollback, [switch]$Previous)
 $ErrorActionPreference = "Stop"
 $Task   = "Personal_DC_V2_Tunnel"
 $Root   = Split-Path -Parent $PSScriptRoot
@@ -14,11 +16,16 @@ $current = Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue
 if (-not $current) { throw "V2_TASK_NOT_FOUND: $Task (create it first with install_v2_windows_autostart_20261009.ps1)" }
 
 if ($Rollback) {
-    $last = Get-ChildItem -LiteralPath $Backup -Filter "task-$Task-*.xml" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if (-not $last) { throw "NO_TASK_BACKUP_FOUND" }
-    if ($DryRun) { Write-Output ("WOULD_RESTORE " + $last.FullName); exit 0 }
-    Register-ScheduledTask -TaskName $Task -Xml ([IO.File]::ReadAllText($last.FullName)) -Force | Out-Null
-    Write-Output ("V2_TASK_RESTORED_FROM=" + $last.FullName); exit 0
+    $orig = Join-Path $Backup "task-$Task-ORIGINAL.xml"
+    if ($Previous) {
+        $pick = Get-ChildItem -LiteralPath $Backup -Filter "task-$Task-*.xml" | Where-Object { $_.Name -notlike "*-ORIGINAL.xml" } |
+            Sort-Object LastWriteTime -Descending |
+            Where-Object { [IO.File]::ReadAllText($_.FullName) -notlike "*start_v2_native_supervisor.ps1*" } | Select-Object -First 1
+    } else { $pick = Get-Item -LiteralPath $orig -ErrorAction SilentlyContinue }
+    if (-not $pick) { throw "NO_TASK_BACKUP_FOUND" }
+    if ($DryRun) { Write-Output ("WOULD_RESTORE " + $pick.FullName); exit 0 }
+    Register-ScheduledTask -TaskName $Task -Xml ([IO.File]::ReadAllText($pick.FullName)) -Force | Out-Null
+    Write-Output ("V2_TASK_RESTORED_FROM=" + $pick.FullName); exit 0
 }
 
 $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
@@ -37,8 +44,8 @@ $xml = Export-ScheduledTask -TaskName $Task
 # The very first export (the pre-v2.2 task) is kept immutably; later exports never replace it.
 $orig = Join-Path $Backup "task-$Task-ORIGINAL.xml"
 if (-not (Test-Path -LiteralPath $orig)) { Set-Content -LiteralPath $orig -Value $xml -Encoding Unicode }
-Set-Content -LiteralPath (Join-Path $Backup "task-$Task-$stamp.xml") -Value $xml -Encoding Unicode
-if ($current.Actions.Arguments -like "*start_v2_native_supervisor.ps1*") { Write-Output "ALREADY_NATIVE_SUPERVISOR (settings refreshed)" }
+if ($current.Actions.Arguments -like "*start_v2_native_supervisor.ps1*") { Write-Output "ALREADY_NATIVE_SUPERVISOR (settings refreshed, no new snapshot)" }
+else { Set-Content -LiteralPath (Join-Path $Backup "task-$Task-$stamp.xml") -Value $xml -Encoding Unicode }
 Set-ScheduledTask -TaskName $Task -Action $action -Trigger $trigger -Principal $principal -Settings $settings | Out-Null
 $after = Get-ScheduledTask -TaskName $Task
 if ($after.State -eq "Disabled") { throw "V2_TASK_DISABLED_AFTER_UPDATE" }

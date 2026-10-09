@@ -40,3 +40,12 @@ upload staging directory not created, `-Name` rejected by the read-only PowerShe
 * Supervisor/autostart scripts: parsed (PowerShell parser, 0 errors) but not executed (would replace the live service).
 
 Production gates G01–G13 are **not** claimed PASS.
+
+## Round 2 (after GPT REQUEST_CHANGES on 24ffa92: F01–F10)
+`python -m pytest tests_phase03 tests_phase02 tests tests_v2 tests_winops -o addopts=""` → **1288 passed, 4 skipped, 0 failed**
+(156 s). New regression coverage: git `--output`/`-o`/`--no-index` (all launch paths, config hash unchanged), paginated
+redaction (every offset/length, after cache clear and recovery), endpoint-bound OData credentials, VRD path policy in
+repair/recovery/rollback, OData verdicts, deployment apply race (one installer), staging failure retry, rollback
+ownership, detach/orphans across restart, autostart updater contract.
+Live: approval key provisioned by the operator command (`approval_key_provisioned True`); the deployed backend still runs
+the pre-fix code until it is restarted (done after the fix commit; see DECISION_LOG).
