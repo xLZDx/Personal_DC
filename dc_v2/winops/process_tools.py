@@ -177,8 +177,42 @@ def _git_containment_risk(exe: Path, cwd: Path, env: dict[str, str]) -> str | No
         gitdir = Path(lines[1].strip())
         if os.path.normcase(os.path.normpath(str(gitdir))) != os.path.normcase(os.path.normpath(str(toplevel / ".git"))):
             return "GIT_DIR_NOT_INSIDE_WORKTREE"   # separate git dirs / linked worktrees: not provably contained
+        return _alternates_risk(gitdir / "objects", 0)
     except (OSError, subprocess.SubprocessError, PolicyError):
         return "GIT_WORKTREE_OUTSIDE_ALLOWED_ROOTS"
+
+
+def _alternates_risk(objects: Path, depth: int) -> str | None:
+    """Every effective object store (``objects/info/alternates``, recursively) must be a ``<root>/.git/objects`` whose
+    ``<root>`` is inside the allowed roots; anything else (outside, odd layout, http-alternates, too deep, unreadable)
+    disables approval-free git, because git reads objects from alternates as if they were local."""
+    if depth > 4:
+        return "GIT_ALTERNATES_TOO_DEEP"
+    info = objects / "info"
+    if (info / "http-alternates").exists():
+        return "GIT_HTTP_ALTERNATES"
+    path = info / "alternates"
+    if not path.exists():
+        return None
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return "GIT_ALTERNATES_UNREADABLE"
+    for raw in lines:
+        line = raw.strip().strip('"')
+        if not line or line.startswith("#"):
+            continue
+        store = Path(line) if os.path.isabs(line) else objects / line
+        store = Path(os.path.normpath(str(store)))
+        if store.name.casefold() != "objects" or store.parent.name.casefold() != ".git":
+            return "GIT_ALTERNATE_OUTSIDE_ALLOWED_ROOTS"
+        try:
+            safe_path(str(store.parent.parent))
+        except PolicyError:
+            return "GIT_ALTERNATE_OUTSIDE_ALLOWED_ROOTS"
+        nested = _alternates_risk(store, depth + 1)
+        if nested:
+            return nested
     return None
 
 
@@ -271,20 +305,23 @@ def _audit_quiet(*args: Any, **kwargs: Any) -> None:
 
 def launch(*, kind: str, label: str, argv: list[str] | None, cmdline: str | None, exe_path: Path,
            cwd: Path, env: dict[str, str], timeout_s: int, mode: str, approval_id: str | None,
-           summary: dict[str, Any], kill_orphans: bool, memory_limit_mb: int | None = None) -> Managed:
+           summary: dict[str, Any], kill_orphans: bool, memory_limit_mb: int | None = None,
+           require_independent_holder: bool = False) -> Managed:
     ensure_recovered()
     _reserve_slot()
     try:
         return _launch(kind=kind, label=label, argv=argv, cmdline=cmdline, exe_path=exe_path, cwd=cwd, env=env,
                        timeout_s=timeout_s, mode=mode, approval_id=approval_id, summary=summary,
-                       kill_orphans=kill_orphans, memory_limit_mb=memory_limit_mb)
+                       kill_orphans=kill_orphans, memory_limit_mb=memory_limit_mb,
+                       require_independent_holder=require_independent_holder)
     finally:
         _release_slot()
 
 
 def _launch(*, kind: str, label: str, argv: list[str] | None, cmdline: str | None, exe_path: Path,
             cwd: Path, env: dict[str, str], timeout_s: int, mode: str, approval_id: str | None,
-            summary: dict[str, Any], kill_orphans: bool, memory_limit_mb: int | None) -> Managed:
+            summary: dict[str, Any], kill_orphans: bool, memory_limit_mb: int | None,
+            require_independent_holder: bool = False) -> Managed:
     pid_id = new_id("prc")
     directory = state_subdir("procs") / pid_id
     directory.mkdir(parents=True)
@@ -306,8 +343,9 @@ def _launch(*, kind: str, label: str, argv: list[str] | None, cmdline: str | Non
         job_name = None if kill_orphans else "Local\pdc-job-" + pid_id      # detached trees stay reachable after a restart
         job = procs.Job(memory_limit_bytes=(memory_limit_mb or 0) * 1024 * 1024 or None,
                         max_active=64 if kill_orphans else None, kill_on_close=kill_orphans, name=job_name,
-                        hosted=job_name is not None)
+                        hosted=job_name is not None, require_independent_holder=require_independent_holder)
         meta["job_name"] = job_name
+        meta["containment"] = "job" if job_name is None or job.holder_independent else "job_holder_not_independent"
         flags = (subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP | procs.CREATE_SUSPENDED)
         args: Any = cmdline if cmdline is not None else [str(exe_path), *(argv or [])]
         popen = subprocess.Popen(args, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL, stdout=out,
@@ -427,7 +465,12 @@ def _finalize(managed: Managed, exit_code: int | None, state: str) -> None:
                 if managed.kill_orphans:
                     job.terminate()
                 else:       # explicit detach: last chance to record descendants (merged with those tracked live)
-                    _record_descendants(managed, job.pids())
+                    members = job.pids()
+                    _record_descendants(managed, members)
+                    if job.query_ok and not [p for p in members if p != managed.meta.get("pid")]:
+                        managed.meta["job_clean"] = True      # nothing is left that could spawn anything
+                        with managed.lock, contextlib.suppress(Exception):
+                            managed.save()
                 job.close()
         _audit_quiet("process.end", managed.meta["state"], process_id=managed.meta["id"], exit_code=exit_code,
                      kill_verified=managed.meta.get("kill_verified"))
@@ -536,9 +579,13 @@ def _reconcile_job_survivors(managed: Managed) -> None:
     name = managed.meta.get("job_name")
     job = procs.Job.open(name) if name else None
     if job is None:
+        if name and not managed.meta.get("job_clean"):
+            managed.meta["containment"] = "job_unreachable"     # unsampled descendants cannot be ruled out
         return
     try:
         members = [p for p in job.pids() if p != managed.meta.get("pid")]
+        if not members and job.query_ok:
+            managed.meta["job_clean"] = True
         if members:
             _record_descendants(managed, members)
             managed.meta["containment"] = "job"
@@ -611,43 +658,74 @@ def wait_done(managed: Managed, timeout: float) -> bool:
 
 
 def _stop_orphans(managed: Managed) -> list[int]:
-    """Terminate recorded detached descendants whose (pid, creation time) identity still matches."""
+    """Terminate a detached tree: through its kernel job first, then by recorded (pid, creation time) identity.
+
+    The outcome is VERIFIED at the end (job empty and queryable, no recorded orphan alive); anything else is persisted
+    as ``stop_incomplete`` so the caller never sees an ordinary success for an unverified stop.
+    """
+    meta = managed.meta
     stopped: list[int] = []
     remaining = []
-    name = managed.meta.get("job_name")
+    problem: str | None = None
+    name = meta.get("job_name")
     job = procs.Job.open(name) if name else None
-    if job is not None:                       # the kernel job is the authority on membership, not sampled PIDs
-        try:
-            members = [p for p in job.pids() if p != managed.meta.get("pid")]
+    if name and job is None and not meta.get("job_clean"):
+        # the job cannot be reached (holder gone, name released) and was never observed empty
+        meta["containment"] = "job_unreachable"
+        problem = "JOB_UNREACHABLE"
+    try:
+        if job is not None:                   # the kernel job is the authority on membership, not sampled PIDs
+            members = [p for p in job.pids() if p != meta.get("pid")]
             if members:
                 _record_descendants(managed, members)
-            identities = [(o["pid"], o["created"]) for o in managed.meta.get("orphans") or [] if o["pid"] in members]
+            identities = [(o["pid"], o["created"]) for o in meta.get("orphans") or [] if o["pid"] in members]
             # terminate regardless of whether enumeration worked or found anything: the job holds only our tree
-            terminated = job.terminate()
+            if not job.terminate():
+                problem = "TERMINATE_JOB_FAILED"
             deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and (any(procs.is_alive(p, c) for p, c in identities) or (
-                    terminated and job.pids())):
+            while time.monotonic() < deadline and (any(procs.is_alive(p, c) for p, c in identities) or job.pids()):
                 time.sleep(0.1)
             stopped.extend(p for p, c in identities if not procs.is_alive(p, c))
-            leftover = job.pids()
-            if leftover or not job.query_ok:
-                managed.meta["containment"] = "job_termination_unverified"
-        finally:
-            job.close()
-    for item in managed.meta.get("orphans") or []:
-        pid, created = item.get("pid"), item.get("created")
-        if pid and created and procs.is_alive(pid, created):
-            with contextlib.suppress(Exception):
-                procs.terminate_tree(pid, created)
-            if procs.is_alive(pid, created):
-                remaining.append(item)
+        for item in meta.get("orphans") or []:       # identity fallback (also covers a job that could not be terminated)
+            pid, created = item.get("pid"), item.get("created")
+            if pid and created and procs.is_alive(pid, created):
+                with contextlib.suppress(Exception):
+                    procs.terminate_tree(pid, created)
+                if procs.is_alive(pid, created):
+                    remaining.append(item)
+                elif pid not in stopped:
+                    stopped.append(pid)
+        if job is not None:                          # final verification of the job itself
+            settle = time.monotonic() + 5
+            left = job.pids()
+            while left and job.query_ok and time.monotonic() < settle:
+                time.sleep(0.1)                      # members killed by identity leave the job a moment later
+                left = job.pids()
+            if not job.query_ok:
+                problem = "MEMBERSHIP_QUERY_FAILED"
+            elif left:
+                problem = problem if problem == "TERMINATE_JOB_FAILED" else "MEMBERS_STILL_ALIVE"
+            elif problem == "TERMINATE_JOB_FAILED" and not remaining:
+                problem = None                       # the identity fallback finished the job and it is verifiably empty
+                meta["job_clean"] = True
             else:
-                stopped.append(pid)
-    if stopped or remaining != (managed.meta.get("orphans") or []):
-        managed.meta["orphans"] = remaining
-        with managed.lock, contextlib.suppress(Exception):
-            managed.save()
-        audit("process.stop_orphans", "OK", process_id=managed.meta["id"], stopped=stopped, remaining=len(remaining))
+                meta["job_clean"] = True
+    finally:
+        if job is not None:
+            job.close()
+    if remaining and not problem:
+        problem = "ORPHANS_STILL_ALIVE"
+    if problem:
+        meta["stop_incomplete"] = problem
+        if problem != "JOB_UNREACHABLE":
+            meta["containment"] = "job_termination_unverified"
+    else:
+        meta.pop("stop_incomplete", None)
+    meta["orphans"] = remaining
+    with managed.lock, contextlib.suppress(Exception):
+        managed.save()                        # always persisted: containment/stop_incomplete are part of the record
+    audit("process.stop_orphans", "INCOMPLETE" if problem else "OK", process_id=meta["id"], stopped=stopped,
+          remaining=len(remaining), reason=problem)
     return stopped
 
 
@@ -656,14 +734,14 @@ def stop_managed(managed: Managed, reason: str = "stopped") -> dict[str, Any]:
     if meta["owner"] != procs.current_user():
         raise PolicyError("PROCESS_OWNER_MISMATCH")
     if meta["state"] in TERMINAL:
-        return {"id": meta["id"], "state": meta["state"], "already_ended": True,
-                "orphans_stopped": _stop_orphans(managed)}
+        return _with_stop_status(managed, {"id": meta["id"], "state": meta["state"], "already_ended": True,
+                                           "orphans_stopped": _stop_orphans(managed)})
     pid, created = meta["pid"], meta["created"]
     if not (pid and created and procs.is_alive(pid, created)):
         code = managed.popen.poll() if managed.popen is not None else None
         _finalize(managed, code, "exited" if code is not None else "exited_unknown")
-        return {"id": meta["id"], "state": meta["state"], "already_ended": True,
-                "orphans_stopped": _stop_orphans(managed)}
+        return _with_stop_status(managed, {"id": meta["id"], "state": meta["state"], "already_ended": True,
+                                           "orphans_stopped": _stop_orphans(managed)})
     managed.stop_reason = reason
     managed.cancel.set()
     wait_done(managed, 10)
@@ -671,8 +749,17 @@ def stop_managed(managed: Managed, reason: str = "stopped") -> dict[str, Any]:
         _kill(managed)
         wait_done(managed, 5)
     audit("process.stop", meta["state"], process_id=meta["id"], kill_verified=meta.get("kill_verified"))
-    return {"id": meta["id"], "state": meta["state"], "exit_code": meta["exit_code"],
-            "kill_verified": meta.get("kill_verified"), "orphans_stopped": _stop_orphans(managed)}
+    return _with_stop_status(managed, {"id": meta["id"], "state": meta["state"], "exit_code": meta["exit_code"],
+                                       "kill_verified": meta.get("kill_verified"),
+                                       "orphans_stopped": _stop_orphans(managed)})
+
+
+def _with_stop_status(managed: Managed, result: dict[str, Any]) -> dict[str, Any]:
+    """A stop that could not be verified is never reported as an ordinary success."""
+    reason = managed.meta.get("stop_incomplete")
+    if reason:
+        result.update(status="STOP_INCOMPLETE", stop_incomplete=reason, containment=managed.meta.get("containment"))
+    return result
 
 
 # ---------------------------------------------------------------- output
@@ -746,7 +833,8 @@ def read_output(managed: Managed, stream: str = "stdout", offset: int = 0, max_b
 def public_meta(meta: dict[str, Any]) -> dict[str, Any]:
     keys = ("id", "kind", "label", "state", "mode", "exe", "cwd", "summary", "owner", "started_at", "ended_at",
             "pid", "timeout_s", "exit_code", "stop_reason", "output_truncated", "children_seen", "recovered",
-            "approval_id", "job_assigned", "kill_verified", "orphans", "containment")
+            "approval_id", "job_assigned", "kill_verified", "orphans", "containment", "stop_incomplete",
+            "job_clean")
     return {k: meta.get(k) for k in keys}
 
 
@@ -830,7 +918,7 @@ def process_start(executable: str, args: list[str] | None = None, cwd: str = "",
         return pending
     managed = launch(kind="process", label=label or exe_path.name, argv=args, cmdline=None, exe_path=exe_path,
                      cwd=workdir, env=environment, timeout_s=timeout, mode=mode, approval_id=approval_id,
-                     summary=params, kill_orphans=not detach)
+                     summary=params, kill_orphans=not detach, require_independent_holder=detach)
     return {"status": "STARTED", **public_meta(managed.meta)}
 
 

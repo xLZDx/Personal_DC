@@ -23,7 +23,7 @@ _RISKY_SECTIONS = {"filter", "alias", "credential", "include", "includeif", "url
                    "uploadpack", "gpg"}
 # Individual keys ("section.key" or "section.subsection.key") that make git run a program.
 _RISKY_KEY = re.compile(
-    r"(?i)^(core\.(editor|pager|fsmonitor|hookspath|sshcommand|askpass|gitproxy|attributesfile|worktree)|"
+    r"(?i)^(core\.(editor|pager|fsmonitor|hookspath|sshcommand|askpass|gitproxy|attributesfile|worktree|alternaterefscommand)|"
     r"sequence\.editor|diff\.(external|tool|guitool)|diff\..*\.(textconv|command)|merge\.tool|merge\..*\.driver|"
     r"commit\.gpgsign|web\.browser|help\.browser|http\.(proxy|sslcommand|cookiefile)|"
     r"credential\..*|protocol\..*\.allow)$")

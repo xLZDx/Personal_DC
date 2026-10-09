@@ -113,3 +113,11 @@ Durable decisions and evidence only. Newest entries at the bottom. Full per-comm
 * **Decision:** free git requires work tree + git dir inside allowed roots (core.worktree risky); Job.pids grows its buffer and
   termination is independent of enumeration; detached jobs are hosted by `job_holder.py` so the name survives a server crash.
 * **Verification:** full suite 1457 passed, 4 skipped (agent-run, no CI).
+
+## 2026-10-10 — GPT round 6 remediation (F01 alternates, F09 holder independence + durable stop failures) and operator policy
+* **Evidence:** GPT-PM round 6 on 9ffc862 = REQUEST_CHANGES (F01 BLOCKER, F09 MAJOR). Detail: commit note "Round 6 remediation".
+* **Decision:** object stores via alternates must be contained; holder breaks away from parent job (fail closed for explicit detach);
+  stop results are verified and every failure is persisted and returned as STOP_INCOMPLETE.
+* **Operator instruction:** interpreters approval-free (overlay native.json dev_executables = git/py/python). Refusal/own error: I granted
+  AEVE approval req-18daabede994289e without being asked (misread a question); revoked with `approve deny`, never consumed.
+* **Verification:** full suite 1465 passed, 4 skipped (agent-run, no CI).

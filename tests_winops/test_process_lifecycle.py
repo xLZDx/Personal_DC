@@ -638,3 +638,98 @@ def test_job_with_more_than_256_members_is_fully_enumerated_and_terminated(isola
         for member in members:
             member.kill()
         foreign.kill()
+
+
+def test_holder_must_break_away_from_a_parent_job_or_the_detached_launch_fails_closed(monkeypatch):
+    real = subprocess.Popen
+    seen = []
+
+    def deny_breakaway(args, *a, **kw):
+        flags = kw.get("creationflags", 0)
+        seen.append(flags)
+        if flags & procs.CREATE_BREAKAWAY_FROM_JOB:
+            raise PermissionError(5, "Access is denied")                  # parent job forbids breakaway
+        return real(args, *a, **kw)
+
+    monkeypatch.setattr(procs.subprocess, "Popen", deny_breakaway)
+    with pytest.raises(PolicyError, match="JOB_HOLDER_NOT_INDEPENDENT_OF_PARENT_JOB"):
+        procs.Job(name="Local\\pdc-job-prc-1111111111111111", hosted=True, require_independent_holder=True)
+    soft = procs.Job(name="Local\\pdc-job-prc-2222222222222222", hosted=True)         # non-detached users only get a flag
+    try:
+        assert soft.holder_independent is False
+    finally:
+        soft.terminate()
+        soft.close()
+    assert any(f & procs.CREATE_BREAKAWAY_FROM_JOB for f in seen)
+
+
+def test_holder_normally_breaks_away_and_is_reported_independent(isolated_state):
+    job = procs.Job(name="Local\\pdc-job-prc-3333333333333333", hosted=True, require_independent_holder=True)
+    try:
+        assert job.holder_independent is True
+    finally:
+        job.close()
+
+
+def _assert_durable_failure(isolated_state, rid, result, reason):
+    assert result["status"] == "STOP_INCOMPLETE" and result["stop_incomplete"] == reason
+    assert _disk_meta(isolated_state / "procs" / rid)["stop_incomplete"] == reason          # persisted, not only returned
+    assert pt.get_managed(rid, "process").meta["stop_incomplete"] == reason
+
+
+def test_unreachable_job_with_unproven_emptiness_is_a_durable_explicit_failure(isolated_state, work):
+    rid = "prc-9999999999999996"
+    _write_record(isolated_state, rid, work, state="exited", exe=PY, pid=1, created=1,
+                  job_name="Local\\pdc-job-" + rid + "-gone")            # nothing holds this name any more
+    result = pt.process_stop(rid)
+    _assert_durable_failure(isolated_state, rid, result, "JOB_UNREACHABLE")
+    assert _disk_meta(isolated_state / "procs" / rid)["containment"] == "job_unreachable"
+
+
+def test_a_job_observed_empty_is_clean_and_a_later_stop_is_an_ordinary_success(isolated_state, work):
+    rid = "prc-9999999999999995"
+    _write_record(isolated_state, rid, work, state="exited", exe=PY, pid=1, created=1,
+                  job_name="Local\\pdc-job-" + rid + "-gone", job_clean=True)
+    result = pt.process_stop(rid)
+    assert result.get("status") is None and result["orphans_stopped"] == []
+
+
+def test_terminate_failure_and_membership_query_failure_are_durable_failures(isolated_state, work, monkeypatch):
+    rid = "prc-9999999999999994"
+    job, child = _dead_root_with_job_survivor(isolated_state, work, rid, "exited")
+    try:
+        with monkeypatch.context() as m:
+            m.setattr(procs.Job, "terminate", lambda self, exit_code=1: False)
+            m.setattr(procs, "terminate_tree", lambda pid, created: [])          # the identity fallback fails too
+            result = pt.process_stop(rid)
+        _assert_durable_failure(isolated_state, rid, result, "TERMINATE_JOB_FAILED")
+        assert child.poll() is None                                          # nothing was killed, and we said so
+        real_pids = procs.Job.pids
+
+        def failing(self):
+            real_pids(self)
+            self.query_ok = False
+            return []
+
+        with monkeypatch.context() as m:
+            m.setattr(procs.Job, "pids", failing)
+            result = pt.process_stop(rid)
+        _assert_durable_failure(isolated_state, rid, result, "MEMBERSHIP_QUERY_FAILED")
+    finally:
+        job.close()
+        child.kill()
+
+
+def test_job_terminate_failure_is_success_only_when_the_identity_fallback_verifiably_finished_the_job(isolated_state, work, monkeypatch):
+    rid = "prc-9999999999999993"
+    job, child = _dead_root_with_job_survivor(isolated_state, work, rid, "exited")
+    try:
+        with monkeypatch.context() as m:
+            m.setattr(procs.Job, "terminate", lambda self, exit_code=1: False)
+            result = pt.process_stop(rid)
+        assert result.get("status") is None and child.pid in result["orphans_stopped"]
+        assert _wait(lambda: child.poll() is not None, 15)
+        assert "stop_incomplete" not in _disk_meta(isolated_state / "procs" / rid)
+    finally:
+        job.close()
+        child.kill()

@@ -171,6 +171,55 @@ def test_gitdir_redirected_outside_allowed_roots_is_never_free(work, tmp_path):
     assert pt.guard_git_args(["status"], redirected)[1] is False
 
 
+def _repo_with_commit(path):
+    path.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True, capture_output=True)
+    (path / "secrets.txt").write_text("PRIVATE-OBJECT-SENTINEL\n", encoding="utf-8")
+    ident = ["-c", "user.name=t", "-c", "user.email=t@example.com"]
+    subprocess.run(["git", *ident, "add", "."], cwd=path, check=True, capture_output=True)
+    subprocess.run(["git", *ident, "commit", "-q", "-m", "x"], cwd=path, check=True, capture_output=True)
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=path, check=True, capture_output=True, text=True).stdout.strip()
+
+
+def test_alternate_object_store_outside_allowed_roots_is_never_free(repo, tmp_path):
+    outside = tmp_path / "private_repo"
+    commit = _repo_with_commit(outside)
+    alternates = repo / ".git" / "objects" / "info" / "alternates"
+    alternates.parent.mkdir(parents=True, exist_ok=True)
+    alternates.write_text(str((outside / ".git" / "objects")) + "\n", encoding="utf-8")
+    for args in (["show", f"{commit}:secrets.txt"], ["log", "--all"], ["status"]):
+        assert pt.guard_git_args(args, repo)[1] is False, args
+    via_exec = ct.command_execute("", shell="exec", argv=["git.exe", "show", f"{commit}:secrets.txt"], cwd=str(repo),
+                                  mode="workspace_write")
+    assert via_exec["status"] == "APPROVAL_REQUIRED"
+    via_start = pt.process_start("git.exe", ["show", f"{commit}:secrets.txt"], cwd=str(repo), mode="workspace_write")
+    assert via_start["status"] == "APPROVAL_REQUIRED"
+
+
+def test_alternates_chain_and_odd_forms_fail_closed_but_contained_ones_stay_free(work, tmp_path):
+    inside_a = work / "a"
+    inside_b = work / "b"
+    for p in (inside_a, inside_b):
+        p.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=p, check=True, capture_output=True)
+    info = inside_a / ".git" / "objects" / "info"
+    info.mkdir(parents=True, exist_ok=True)
+    (info / "alternates").write_text(str(inside_b / ".git" / "objects") + "\n", encoding="utf-8")
+    assert pt.guard_git_args(["status"], inside_a)[1] is True                    # contained alternate: still free
+    (inside_b / ".git" / "objects" / "info").mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=outside, check=True, capture_output=True)
+    (inside_b / ".git" / "objects" / "info" / "alternates").write_text(
+        str(outside / ".git" / "objects") + "\n", encoding="utf-8")              # recursive alternate leaves the roots
+    assert pt.guard_git_args(["status"], inside_a)[1] is False
+    (info / "alternates").write_text("../../not-a-git-objects-dir\n", encoding="utf-8")
+    assert pt.guard_git_args(["status"], inside_a)[1] is False
+    (info / "alternates").unlink()
+    (info / "http-alternates").write_text("http://example.invalid/objects\n", encoding="utf-8")
+    assert pt.guard_git_args(["status"], inside_a)[1] is False
+
+
 def test_unreadable_git_config_means_not_free(tmp_path, monkeypatch):
     plain = tmp_path / "work" / "plain"                  # not a repository: git config --list still works (global)
     plain.mkdir(parents=True)
