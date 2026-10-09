@@ -28,9 +28,20 @@ async def verify():
         results["unauthenticated_denied"] = result.status_code == 401
         result = await client.post(URL, headers={**headers, "X-PDC-V2-Demo-Auth": "wrong"}, json=data)
         results["invalid_key_denied"] = result.status_code == 401
-        result = await client.post(URL, headers={**headers, "X-PDC-V2-Demo-Auth": KEY,
+        result = await client.post(URL, headers={**headers,
                                                 "Origin": "https://untrusted.example"}, json=data)
-        results["untrusted_origin_denied"] = result.status_code == 403
+        results["origin_without_key_denied"] = result.status_code == 401
+        # A private OpenAI Tunnel can forward browser-origin and proxy headers.
+        # With the right local-hop credential the guard strips these metadata
+        # before FastMCP receives them; the MCP is still synthetic/read-only.
+        result = await client.post(URL, headers={**headers, "X-PDC-V2-Demo-Auth": KEY,
+                                                "Host": "remote-control-plane.example",
+                                                "Origin": "https://chatgpt.com",
+                                                "X-Forwarded-Host": "api.openai.com"}, json=data)
+        results["tunnel_metadata_with_key_accepted"] = (
+            result.status_code == 200 and
+            "Personal DC 2.2" in str(result.json().get("result", {}))
+        )
     async with httpx.AsyncClient(timeout=9, trust_env=False,
                                 headers={"X-PDC-V2-Demo-Auth": KEY}) as client:
         async with streamable_http_client(URL, http_client=client,

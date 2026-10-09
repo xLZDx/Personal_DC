@@ -13,3 +13,20 @@ vendor/tunnel-client/*.json
 vendor/tunnel-client/*.txt
 vendor/tunnel-client/LICENSE
 vendor/tunnel-client/NOTICE
+
+# Machine-local, intermediate run captures (retain locally, do not publish).
+# Curated evidence/phase03/*-final-* remains separately versioned.
+evidence/phase03/full-console.txt
+evidence/phase03/full-junit.xml
+evidence/phase03/git-diff-stat.txt
+evidence/phase03/git-remotes.txt
+evidence/phase03/hardening-exit*.txt
+evidence/phase03/hardening-tests.txt
+evidence/phase03/hardening-tests-v2.txt
+evidence/phase03/hardening-tests-v3.txt
+evidence/phase03/live-console.txt
+evidence/phase03/live-current-*.txt
+evidence/phase03/pr-list.json
+evidence/phase03/toolchains-console.txt
+evidence/phase03/toolchains-current-*.txt
+evidence/phase03/unit-console.txt

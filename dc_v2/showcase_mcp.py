@@ -195,10 +195,17 @@ class LocalHopGuard:
                     await self._reject(send, 403)
                     return
                 headers[key] = v
-            if (headers.get("host") != b"127.0.0.1:18766" or
-                    "origin" in headers or any(
-                        k.startswith(("x-forwarded-", "x-auth-", "x-user-")) or
-                        k == "forwarded" for k in headers)):
+            # The tunnel is an authenticated *loopback client*, but it may
+            # forward the remote Host, Origin and proxy metadata. Rejecting
+            # those headers broke legitimate tunnel-driven tools discovery.
+            # None of these values are trusted or passed to the MCP app.
+            if (len(headers) > 48 or
+                    sum(len(k) + len(v) for k, v in headers.items()) > 16384 or
+                    "host" not in headers or
+                    any(not k or not all(c.isascii() and
+                        (c.isalnum() or c in "-_") for c in k)
+                        for k in headers) or
+                    any(b"\r" in v or b"\n" in v for v in headers.values())):
                 await self._reject(send, 403)
                 return
             # No OAuth metadata is served in the v1-mirroring demo profile.
@@ -212,6 +219,17 @@ class LocalHopGuard:
             if scope.get("method") != "POST":
                 await self._reject(send, 405)
                 return
+            # Minimize forwarded headers and pin Host for FastMCP's DNS
+            # rebinding check. Never delegate credentials, Origin, cookies,
+            # X-Forwarded-* or another client's identity claims.
+            permitted = ("accept", "content-type", "content-length",
+                         "mcp-protocol-version", "mcp-session-id",
+                         "last-event-id")
+            clean_headers = [(b"host", b"127.0.0.1:18766")]
+            clean_headers.extend((k.encode("ascii"), headers[k])
+                                 for k in permitted if k in headers)
+            guarded_scope = dict(scope)
+            guarded_scope["headers"] = clean_headers
             now = time.monotonic()
             with self._lock:
                 while self._history and self._history[0] <= now - 60:
@@ -226,7 +244,7 @@ class LocalHopGuard:
             if not allowed:
                 await self._reject(send, 429)
                 return
-            await self._delegate(scope, receive, send)
+            await self._delegate(guarded_scope, receive, send)
         except (UnicodeError, ValueError, TypeError):
             await self._reject(send, 403)
         finally:
