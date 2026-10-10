@@ -159,3 +159,8 @@ Durable decisions and evidence only. Newest entries at the bottom. Full per-comm
 ## 2026-10-10 — Force push allowed in guard_git_args too (round 12b)
 * **Evidence:** live probe after the restart: `git push --force` -> GIT_FORCE_OR_DELETE_PUSH_NOT_ALLOWED although the operator allowed force push.
 * **Decision:** the older rule now blocks only delete/mirror/prune/:ref pushes. Targeted tests 428 passed; full suite not re-run (operator order).
+
+## 2026-10-10 — No console windows for any launched process (round 13)
+* **Evidence:** operator: a PowerShell window flashes for seconds on every call/connection. All explicit launches already used CREATE_NO_WINDOW, but older modules (windows_native_tools) and third-party paths did not.
+* **Decision:** process-wide `subprocess.Popen` patch (`dc_v2/nowindow.py`) adds CREATE_NO_WINDOW unless a console mode was chosen. Residual: the scheduled-task launcher can still blink once at start.
+* **Verification:** tests_winops 825 passed (agent-run, no CI).

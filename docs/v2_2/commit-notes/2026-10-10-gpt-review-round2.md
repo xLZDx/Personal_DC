@@ -146,3 +146,11 @@ and force pushes are allowed again. Abbreviation handling (`--har`, `--for`) is 
 The live check after the narrowing showed `git push --force` still refused by an older rule in `process_tools.guard_git_args`
 (`GIT_FORCE_OR_DELETE_PUSH_NOT_ALLOWED`). That rule now blocks only delete/mirror/prune/`:ref` pushes (`GIT_DELETE_PUSH_NOT_ALLOWED`);
 force, `+ref`, `--force-with-lease`, `-uf` pass. Tests updated (428 passed, targeted); full suite not re-run.
+
+## Round 13: no console windows (operator request)
+
+The operator saw a PowerShell window flash for a few seconds on every call/connection. New `dc_v2/nowindow.py`: patches `subprocess.Popen.__init__`
+once so every child process of the server (PowerShell, git, python, any `subprocess.run`, asyncio subprocesses) gets `CREATE_NO_WINDOW` unless
+the caller chose `CREATE_NEW_CONSOLE`/`DETACHED_PROCESS`/`CREATE_NO_WINDOW` itself. Imported by `native_personal_mcp` and `dc_v2.winops`.
+Not covered: the scheduled-task action itself (`powershell.exe -WindowStyle Hidden ...` may still blink once at logon/start). Tests:
+`tests_winops/test_nowindow.py`; whole `tests_winops` = 825 passed (full suite of other folders not re-run).

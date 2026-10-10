@@ -19,6 +19,7 @@ import os
 from mcp.server.fastmcp import FastMCP
 from personal_dc.server import mcp as native_tools
 
+from . import nowindow as _nowindow  # noqa: F401  (no console window for any child process)
 from .showcase_mcp import LocalHopGuard
 from .windows_native_tools import register_native_tools
 from .binary_transfer import register_binary_tools
