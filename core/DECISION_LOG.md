@@ -121,3 +121,10 @@ Durable decisions and evidence only. Newest entries at the bottom. Full per-comm
 * **Operator instruction:** interpreters approval-free (overlay native.json dev_executables = git/py/python). Refusal/own error: I granted
   AEVE approval req-18daabede994289e without being asked (misread a question); revoked with `approve deny`, never consumed.
 * **Verification:** full suite 1465 passed, 4 skipped (agent-run, no CI).
+
+## 2026-10-10 — GPT round 7 remediation (F01 reparse-point object stores/worktrees, F09 retention + job identity)
+* **Evidence:** GPT-PM round 7 on 2f9d194 = REQUEST_CHANGES (F01 BLOCKER, 2x F09 MAJOR). Detail: commit note "Round 7 remediation".
+* **Decision:** no reparse points in git dir/object database/alternates/work tree for free git; recovery precedes retention and records with
+  unproven job emptiness are kept; a job is re-opened and terminated only when its recorded holder (pid + creation time) is alive;
+  durable `holder.clean` marker proves emptiness across restarts.
+* **Verification:** full suite 1473 passed, 4 skipped (agent-run, no CI).

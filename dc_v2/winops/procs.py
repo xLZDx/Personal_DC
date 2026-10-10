@@ -239,22 +239,25 @@ HOLDER_SCRIPT = Path(__file__).with_name("job_holder.py")
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
 
-def _start_holder(name: str) -> bool:
+def _start_holder(name: str, marker: str = "") -> tuple[bool, int, int]:
     """Start the detached holder and wait until it reports that the named job exists.
 
     The holder must not share the server's own job (a kill-on-close parent job would take it down together with the
-    server), so it is created with CREATE_BREAKAWAY_FROM_JOB. Returns False when breakaway is not permitted and the
-    holder had to be started inside the inherited job (its independence is then NOT guaranteed).
+    server), so it is created with CREATE_BREAKAWAY_FROM_JOB. Returns ``(independent, holder pid, holder creation
+    time)``; independent is False when breakaway is not permitted and the holder had to be started inside the
+    inherited job (its independence is then NOT guaranteed). The holder identity is what later proves that a job
+    found under the name is the original one.
     """
+    extra = [marker] if marker else []
     base = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
     independent = True
     try:
-        proc = subprocess.Popen([sys.executable, "-S", "-I", str(HOLDER_SCRIPT), name], stdin=subprocess.DEVNULL,
+        proc = subprocess.Popen([sys.executable, "-S", "-I", str(HOLDER_SCRIPT), name, *extra], stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, shell=False,
                                 creationflags=base | CREATE_BREAKAWAY_FROM_JOB)
     except OSError:                                       # parent job forbids breakaway (ERROR_ACCESS_DENIED)
         independent = False
-        proc = subprocess.Popen([sys.executable, "-S", "-I", str(HOLDER_SCRIPT), name], stdin=subprocess.DEVNULL,
+        proc = subprocess.Popen([sys.executable, "-S", "-I", str(HOLDER_SCRIPT), name, *extra], stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, shell=False, creationflags=base)
     line: list[str] = []
     reader = threading.Thread(target=lambda: line.append(proc.stdout.readline().decode("ascii", "replace").strip()),
@@ -266,7 +269,12 @@ def _start_holder(name: str) -> bool:
             proc.kill()
         raise PolicyError("JOB_HOLDER_NOT_READY")
     proc.stdout.close()                                  # the holder never writes again; it ends when the job is empty
-    return independent
+    created = creation_time(proc.pid)
+    if not created:
+        with __import__("contextlib").suppress(Exception):
+            proc.kill()
+        raise PolicyError("JOB_HOLDER_IDENTITY_UNAVAILABLE")
+    return independent, proc.pid, created
 JOB_OBJECT_QUERY = 0x0004
 JOB_OBJECT_TERMINATE = 0x0008
 
@@ -280,17 +288,19 @@ class Job:
 
     def __init__(self, memory_limit_bytes: int | None = None, max_active: int | None = None,
                  kill_on_close: bool = False, name: str | None = None, hosted: bool = False,
-                 require_independent_holder: bool = False) -> None:
+                 require_independent_holder: bool = False, holder_marker: str = "") -> None:
         """``hosted``: a separate holder process owns a handle to the named job, so the name (and therefore
         re-opening, membership and termination) survives the death of THIS process."""
         k = k32()
         self.name = name
         self.query_ok = True
         self.holder_independent: bool | None = None
+        self.holder_pid: int | None = None
+        self.holder_created: int | None = None
         if hosted:
             if not name or kill_on_close:
                 raise PolicyError("JOB_HOST_REQUIRES_NAME_AND_NO_KILL_ON_CLOSE")
-            self.holder_independent = _start_holder(name)
+            self.holder_independent, self.holder_pid, self.holder_created = _start_holder(name, holder_marker)
             if require_independent_holder and not self.holder_independent:
                 raise PolicyError("JOB_HOLDER_NOT_INDEPENDENT_OF_PARENT_JOB")
             self.handle = k.OpenJobObjectW(JOB_OBJECT_ALL_ACCESS, False, name)

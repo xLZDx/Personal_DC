@@ -5,7 +5,9 @@ still run. When the server dies, every handle it owned dies with it, so a detach
 re-opened by name. This holder owns one extra handle, outlives the server, and exits itself when the job has had
 members and is now empty (or when nothing ever joined within the grace period).
 
-Usage: ``python job_holder.py <job-name>``; prints ``ready`` once the job exists.
+Usage: ``python job_holder.py <job-name> [<clean-marker-path>]``; prints ``ready`` once the job exists. When the job
+had members and is empty again, the optional marker file is written BEFORE exiting: it is the durable proof (readable
+after a server restart) that nothing from that job can still be alive.
 """
 from __future__ import annotations
 
@@ -25,7 +27,7 @@ class _Accounting(ctypes.Structure):
                 ("ActiveProcesses", wintypes.DWORD), ("TotalTerminatedProcesses", wintypes.DWORD)]
 
 
-def main(name: str) -> int:
+def main(name: str, marker: str = "") -> int:
     k = ctypes.WinDLL("kernel32", use_last_error=True)
     k.CreateJobObjectW.restype = wintypes.HANDLE
     k.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
@@ -44,9 +46,15 @@ def main(name: str) -> int:
         if info.ActiveProcesses > 0:
             seen = True
         elif seen or time.time() - started > GRACE_SECONDS:
+            if seen and marker:
+                try:
+                    with open(marker, "w", encoding="ascii") as out:
+                        out.write("clean")
+                except OSError:
+                    return 4
             return 0
         time.sleep(1)
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1]) if len(sys.argv) == 2 else 64)
+    sys.exit(main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "") if len(sys.argv) in (2, 3) else 64)

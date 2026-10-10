@@ -75,3 +75,15 @@ At the operator's explicit instruction interpreters are approval-free in workspa
 `%LOCALAPPDATA%\Personal_DC_V2\config\native.json` sets `dev_executables` to `git.exe, py.exe, python.exe` (repository defaults unchanged;
 PowerShell/cmd and every destructive form stay governed by the deletion policy). I also granted one approval myself by mistake
 (`req-18daabede994289e`, AEVE `g0_acceptance.py`); the operator had not asked for it, and I revoked it with `approve deny`.
+
+## Round 7 remediation (follow-up commit)
+
+GPT verification round 7 on 2f9d194: F01 (BLOCKER) and two F09 items (MAJOR) open.
+
+| Finding | Change |
+|---|---|
+| F01 object database redirected | `_git_containment_risk` rejects reparse points (`common.is_reparse`: symlink/junction/mount point) on the git dir, `objects`, `objects/info`, `objects/pack`, and on every alternate store (and its `.git` parent). Same class found while testing: `git add -A` follows a work-tree junction into another directory, so `_worktree_reparse_risk` scans the work tree (bounded to 60000 entries; too large to verify => not free). Native Windows junction tests (`mklink /J`) for all three cases. |
+| F09 retention | `ensure_recovered` now runs `_prune_old()` AFTER recovery, and `_must_retain` keeps terminal records that have `stop_incomplete`, a live recorded orphan, or a job whose emptiness is unproven (open + members, or unreachable). Records with `job_clean` (observed empty) or the holder's `holder.clean` marker expire normally. |
+| F09 name reuse | A job found under a name is trusted only if the holder recorded at launch (`meta.job_holder` pid + creation time) is still alive (`_open_owned_job`); otherwise the job is "unreachable" and is NEVER terminated by name (identity fallback + explicit `JOB_UNREACHABLE` failure). The holder writes `procs/<id>/holder.clean` when the job had members and emptied, which gives a durable proof across restarts (`_holder_clean`). Test: original job retired, another job created under the same name with an unrelated process; `process_stop` leaves it alone. |
+
+Tests: full run 1473 passed, 4 skipped.

@@ -220,6 +220,55 @@ def test_alternates_chain_and_odd_forms_fail_closed_but_contained_ones_stay_free
     assert pt.guard_git_args(["status"], inside_a)[1] is False
 
 
+def test_objects_directory_redirected_by_a_junction_is_never_free(repo, tmp_path, make_junction):
+    outside = tmp_path / "private_repo"
+    commit = _repo_with_commit(outside)
+    objects = repo / ".git" / "objects"
+    for child in sorted(objects.rglob("*"), reverse=True):                   # empty the real store, then redirect it
+        child.rmdir() if child.is_dir() else child.unlink()
+    objects.rmdir()
+    make_junction(objects, outside / ".git" / "objects")
+    assert pt.guard_git_args(["status"], repo)[1] is False
+    for args in (["show", f"{commit}:secrets.txt"], ["log", "--all"]):
+        assert pt.guard_git_args(args, repo)[1] is False, args
+    via_exec = ct.command_execute("", shell="exec", argv=["git.exe", "show", f"{commit}:secrets.txt"], cwd=str(repo),
+                                  mode="workspace_write")
+    assert via_exec["status"] == "APPROVAL_REQUIRED"
+    via_start = pt.process_start("git.exe", ["show", f"{commit}:secrets.txt"], cwd=str(repo), mode="workspace_write")
+    assert via_start["status"] == "APPROVAL_REQUIRED"
+
+
+def test_worktree_junction_into_another_directory_is_never_free(repo, tmp_path, make_junction):
+    private = tmp_path / "private_dir"
+    private.mkdir()
+    (private / "private.txt").write_text("secret\n", encoding="utf-8")
+    assert pt.guard_git_args(["add", "-A"], repo)[1] is True
+    make_junction(repo / "link", private)
+    assert pt.guard_git_args(["add", "-A"], repo)[1] is False
+    via_exec = ct.command_execute("", shell="exec", argv=["git.exe", "add", "-A"], cwd=str(repo), mode="workspace_write")
+    assert via_exec["status"] == "APPROVAL_REQUIRED"
+    listed = subprocess.run(["git", "ls-files", "--cached"], cwd=repo, capture_output=True, text=True)
+    assert "private.txt" not in listed.stdout
+
+
+def test_alternate_store_reached_through_a_junction_is_never_free(work, tmp_path, make_junction):
+    inside_a, inside_b = work / "a", work / "b"
+    for p in (inside_a, inside_b):
+        p.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=p, check=True, capture_output=True)
+    outside = tmp_path / "private_repo"
+    _repo_with_commit(outside)
+    objects_b = inside_b / ".git" / "objects"
+    for child in sorted(objects_b.rglob("*"), reverse=True):
+        child.rmdir() if child.is_dir() else child.unlink()
+    objects_b.rmdir()
+    make_junction(objects_b, outside / ".git" / "objects")
+    info = inside_a / ".git" / "objects" / "info"
+    info.mkdir(parents=True, exist_ok=True)
+    (info / "alternates").write_text(str(objects_b) + "\n", encoding="utf-8")
+    assert pt.guard_git_args(["status"], inside_a)[1] is False
+
+
 def test_unreadable_git_config_means_not_free(tmp_path, monkeypatch):
     plain = tmp_path / "work" / "plain"                  # not a repository: git config --list still works (global)
     plain.mkdir(parents=True)

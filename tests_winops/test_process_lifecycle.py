@@ -570,7 +570,8 @@ def _dead_root_with_job_survivor(isolated_state, work, rid, state):
                              creationflags=subprocess.CREATE_NO_WINDOW)
     assert _wait(lambda: procs.creation_time(child.pid), 10)
     assert job.assign(int(child._handle))
-    _write_record(isolated_state, rid, work, state=state, exe=PY, pid=root.pid, created=root_created, job_name=name)
+    _write_record(isolated_state, rid, work, state=state, exe=PY, pid=root.pid, created=root_created, job_name=name,
+                  job_holder={"pid": job.holder_pid, "created": job.holder_created})
     return job, child
 
 
@@ -624,7 +625,8 @@ def test_job_with_more_than_256_members_is_fully_enumerated_and_terminated(isola
             assert job.assign(int(member._handle))
         listed = job.pids()
         assert job.query_ok and len(listed) >= 270                         # buffer grew past 256 instead of returning []
-        _write_record(isolated_state, rid, work, state="running", exe=PY, pid=root.pid, created=root_created, job_name=name)
+        _write_record(isolated_state, rid, work, state="running", exe=PY, pid=root.pid, created=root_created, job_name=name,
+                      job_holder={"pid": job.holder_pid, "created": job.holder_created})
         job.close()
         pt._RECOVERED = False
         pt.ensure_recovered()                                              # dead parent, empty orphan list, 270 members
@@ -733,3 +735,93 @@ def test_job_terminate_failure_is_success_only_when_the_identity_fallback_verifi
     finally:
         job.close()
         child.kill()
+
+
+def test_expired_terminal_record_with_a_live_job_member_is_not_pruned_and_stays_addressable(isolated_state, work):
+    rid = "prc-9999999999999992"
+    job, child = _dead_root_with_job_survivor(isolated_state, work, rid, "exited")
+    directory = isolated_state / "procs" / rid
+    old = time.time() - 40 * 86400
+    os.utime(directory / "meta.json", (old, old))                         # far past the retention period
+    try:
+        pt._RECOVERED = False
+        pt.ensure_recovered()                                              # recovery runs BEFORE cleanup
+        assert directory.is_dir()
+        result = pt.process_stop(rid)                                      # still addressable by its original id
+        assert child.pid in result["orphans_stopped"]
+        assert _wait(lambda: child.poll() is not None, 15)
+        # now provably empty: the next cleanup may expire it
+        os.utime(directory / "meta.json", (old, old))
+        pt._prune_old()
+        assert not directory.exists()
+    finally:
+        job.close()
+        child.kill()
+
+
+def test_expired_record_with_unverified_job_or_stop_failure_is_kept_but_clean_ones_expire(isolated_state, work):
+    keep_unreachable = _write_record(isolated_state, "prc-9999999999999991", work, state="exited", exe=PY, pid=1, created=1,
+                                     job_name="Local\\pdc-job-prc-9999999999999991", job_holder={"pid": 1, "created": 1})
+    keep_failed = _write_record(isolated_state, "prc-9999999999999990", work, state="exited", exe=PY, pid=1, created=1,
+                                stop_incomplete="TERMINATE_JOB_FAILED")
+    drop_clean = _write_record(isolated_state, "prc-9999999999999989", work, state="exited", exe=PY, pid=1, created=1,
+                               job_name="Local\\pdc-job-prc-9999999999999989", job_clean=True)
+    drop_plain = _write_record(isolated_state, "prc-9999999999999988", work, state="exited", exe=PY, pid=1, created=1)
+    old = time.time() - 40 * 86400
+    for directory in (keep_unreachable, keep_failed, drop_clean, drop_plain):
+        os.utime(directory / "meta.json", (old, old))
+    pt._prune_old()
+    assert keep_unreachable.is_dir() and keep_failed.is_dir()
+    assert not drop_clean.exists() and not drop_plain.exists()
+
+
+def test_holder_clean_marker_is_durable_proof_and_lets_a_record_expire(isolated_state, work):
+    rid = "prc-9999999999999987"
+    directory = _write_record(isolated_state, rid, work, state="exited", exe=PY, pid=1, created=1,
+                              job_name="Local\\pdc-job-" + rid, job_holder={"pid": 1, "created": 1})
+    (directory / "holder.clean").write_text("clean", encoding="ascii")
+    result = pt.process_stop(rid)
+    assert result.get("status") is None                                    # clean proof => not "unreachable"
+    os.utime(directory / "meta.json", (time.time() - 40 * 86400,) * 2)
+    pt._prune_old()
+    assert not directory.exists()
+
+
+def test_a_real_holder_writes_the_clean_marker_when_the_job_empties(isolated_state, work):
+    marker = isolated_state / "holder.clean"
+    job = procs.Job(name="Local\\pdc-job-prc-9999999999999986", hosted=True, holder_marker=str(marker))
+    holder = (job.holder_pid, job.holder_created)
+    member = subprocess.Popen([PY, "-c", "import time;time.sleep(1)"], stdin=subprocess.DEVNULL,
+                              creationflags=subprocess.CREATE_NO_WINDOW)
+    try:
+        assert job.assign(int(member._handle))
+        member.wait(15)
+        assert _wait(lambda: marker.is_file(), 20)
+        assert _wait(lambda: not procs.is_alive(*holder), 20)              # and the holder exits afterwards
+    finally:
+        job.close()
+        member.kill()
+
+
+def test_a_job_re_created_under_the_same_name_is_never_terminated_for_a_finished_record(isolated_state, work):
+    rid = "prc-9999999999999985"
+    name = "Local\\pdc-job-" + rid
+    original = procs.Job(name=name, hosted=True)
+    holder = {"pid": original.holder_pid, "created": original.holder_created}
+    member = subprocess.Popen([PY, "-c", "import time;time.sleep(1)"], stdin=subprocess.DEVNULL,
+                              creationflags=subprocess.CREATE_NO_WINDOW)
+    assert original.assign(int(member._handle))
+    member.wait(15)                                                        # the job had a member and is empty again
+    original.close()
+    assert _wait(lambda: not procs.is_alive(holder["pid"], holder["created"]), 20)       # original job and holder are gone
+    _write_record(isolated_state, rid, work, state="exited", exe=PY, pid=1, created=1, job_name=name, job_holder=holder)
+    impostor_job = procs.Job(name=name)                                    # someone else re-uses the free name
+    bystander = _foreign_process()
+    try:
+        assert impostor_job.assign(int(bystander._handle))
+        result = pt.process_stop(rid)
+        assert result["status"] == "STOP_INCOMPLETE" and result["stop_incomplete"] == "JOB_UNREACHABLE"
+        assert bystander.poll() is None                                    # the unrelated process was NOT terminated
+    finally:
+        impostor_job.close()
+        bystander.kill()

@@ -31,7 +31,7 @@ from . import procs
 from .deletion_policy import deny_deletion_argv
 from .git_policy import config_risk_from_listing, git_is_free, trusted_config_origins
 from .common import (ELEVATED, READ_ONLY, WORKSPACE_WRITE, approval_or_response, atomic_write_json, audit,
-                     iso, limit, native_config, new_id, read_json, redact, redact_text, safe_path,
+                     is_reparse, iso, limit, native_config, new_id, read_json, redact, redact_text, safe_path,
                      sha256_text, state_subdir, threaded, valid_id)
 
 _RO = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
@@ -177,9 +177,35 @@ def _git_containment_risk(exe: Path, cwd: Path, env: dict[str, str]) -> str | No
         gitdir = Path(lines[1].strip())
         if os.path.normcase(os.path.normpath(str(gitdir))) != os.path.normcase(os.path.normpath(str(toplevel / ".git"))):
             return "GIT_DIR_NOT_INSIDE_WORKTREE"   # separate git dirs / linked worktrees: not provably contained
-        return _alternates_risk(gitdir / "objects", 0)
+        for part in (gitdir, gitdir / "objects", gitdir / "objects" / "info", gitdir / "objects" / "pack"):
+            if is_reparse(part):
+                return "GIT_OBJECT_DATABASE_REDIRECTED"       # a junction/symlink can point the store anywhere
+        return _alternates_risk(gitdir / "objects", 0) or _worktree_reparse_risk(toplevel)
     except (OSError, subprocess.SubprocessError, PolicyError):
         return "GIT_WORKTREE_OUTSIDE_ALLOWED_ROOTS"
+
+
+MAX_WORKTREE_SCAN_ENTRIES = 60000
+
+
+def _worktree_reparse_risk(toplevel: Path) -> str | None:
+    """git follows junctions into other directories (``git add -A`` would stage them): free git needs a work tree
+    without reparse points; one too large to verify is not provably contained."""
+    seen = 0
+    stack = [toplevel]
+    while stack:
+        with os.scandir(stack.pop()) as entries:
+            for entry in entries:
+                if entry.name.casefold() == ".git":
+                    continue
+                seen += 1
+                if seen > MAX_WORKTREE_SCAN_ENTRIES:
+                    return "GIT_WORKTREE_TOO_LARGE_TO_VERIFY"
+                if entry.is_symlink() or entry.is_junction():
+                    return "GIT_WORKTREE_CONTAINS_REPARSE_POINT"
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(Path(entry.path))
+    return None
 
 
 def _alternates_risk(objects: Path, depth: int) -> str | None:
@@ -206,6 +232,8 @@ def _alternates_risk(objects: Path, depth: int) -> str | None:
         store = Path(os.path.normpath(str(store)))
         if store.name.casefold() != "objects" or store.parent.name.casefold() != ".git":
             return "GIT_ALTERNATE_OUTSIDE_ALLOWED_ROOTS"
+        if any(is_reparse(part) for part in (store.parent, store, store / "info", store / "pack")):
+            return "GIT_OBJECT_DATABASE_REDIRECTED"
         try:
             safe_path(str(store.parent.parent))
         except PolicyError:
@@ -343,8 +371,10 @@ def _launch(*, kind: str, label: str, argv: list[str] | None, cmdline: str | Non
         job_name = None if kill_orphans else "Local\pdc-job-" + pid_id      # detached trees stay reachable after a restart
         job = procs.Job(memory_limit_bytes=(memory_limit_mb or 0) * 1024 * 1024 or None,
                         max_active=64 if kill_orphans else None, kill_on_close=kill_orphans, name=job_name,
-                        hosted=job_name is not None, require_independent_holder=require_independent_holder)
+                        hosted=job_name is not None, require_independent_holder=require_independent_holder,
+                        holder_marker=str(directory / "holder.clean"))
         meta["job_name"] = job_name
+        meta["job_holder"] = ({"pid": job.holder_pid, "created": job.holder_created} if job_name else None)
         meta["containment"] = "job" if job_name is None or job.holder_independent else "job_holder_not_independent"
         flags = (subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP | procs.CREATE_SUSPENDED)
         args: Any = cmdline if cmdline is not None else [str(exe_path), *(argv or [])]
@@ -563,6 +593,25 @@ def _monitor_loop(managed: Managed) -> None:
             _record_descendants(managed, live)
 
 
+def _must_retain(data: dict[str, Any]) -> bool:
+    """A record that is still the only handle on live or unverified descendants is never expired."""
+    if data.get("stop_incomplete"):
+        return True
+    for item in data.get("orphans") or []:
+        if procs.is_alive(item.get("pid"), item.get("created")):
+            return True
+    if not data.get("job_name") or _holder_clean(data):
+        return False
+    job = _open_owned_job(data)
+    if job is None:
+        return True                           # emptiness was never established and the job cannot be inspected
+    try:
+        members = [p for p in job.pids() if p != data.get("pid")]
+        return bool(members) or not job.query_ok
+    finally:
+        job.close()
+
+
 def _prune_old() -> None:
     cutoff = time.time() - limit("process_retention_days") * 86400
     for directory in state_subdir("procs").iterdir():
@@ -570,16 +619,37 @@ def _prune_old() -> None:
             meta = directory / "meta.json"
             if directory.is_dir() and meta.is_file() and meta.stat().st_mtime < cutoff:
                 data = read_json(meta, {})
-                if data.get("state") in TERMINAL:
+                if data.get("state") in TERMINAL and not _must_retain(data):
                     shutil.rmtree(directory, ignore_errors=True)
+
+
+def _holder_clean(meta: dict[str, Any]) -> bool:
+    """Durable proof that the job emptied: observed empty by the server, or the holder's clean-exit marker."""
+    if meta.get("job_clean"):
+        return True
+    with contextlib.suppress(OSError, PolicyError):
+        return (state_subdir("procs") / str(meta.get("id")) / "holder.clean").is_file()
+    return False
+
+
+def _open_owned_job(meta: dict[str, Any]) -> "procs.Job | None":
+    """Re-open the job of a record ONLY if it is provably the original: the holder process recorded at launch (pid +
+    creation time) must still be alive. A bare name can be re-created by anyone once the original object is gone, and
+    terminating such a look-alike would kill unrelated processes."""
+    name, holder = meta.get("job_name"), meta.get("job_holder")
+    if not name or not isinstance(holder, dict) or not procs.is_alive(holder.get("pid"), holder.get("created")):
+        return None
+    return procs.Job.open(name)
 
 
 def _reconcile_job_survivors(managed: Managed) -> None:
     """The root is gone but its named job may still hold live descendants: record their identities now."""
     name = managed.meta.get("job_name")
-    job = procs.Job.open(name) if name else None
+    job = _open_owned_job(managed.meta) if name else None
     if job is None:
-        if name and not managed.meta.get("job_clean"):
+        if name and _holder_clean(managed.meta):
+            managed.meta["job_clean"] = True
+        elif name:
             managed.meta["containment"] = "job_unreachable"     # unsampled descendants cannot be ruled out
         return
     try:
@@ -600,7 +670,6 @@ def ensure_recovered() -> None:
     with _RECOVERY_LOCK:
         if _RECOVERED:
             return
-        _prune_old()
         for directory in state_subdir("procs").iterdir():
             if not directory.is_dir() or not valid_id(directory.name):
                 continue
@@ -615,7 +684,7 @@ def ensure_recovered() -> None:
                         (procs.image_path(pid) or "").casefold() == str(meta.get("exe", "")).casefold()):
                     meta["recovered"] = True
                     name = meta.get("job_name")
-                    managed.job = procs.Job.open(name) if name else None
+                    managed.job = _open_owned_job(meta) if name else None
                     # without the named job only periodic scans can find descendants: say so instead of implying completeness
                     meta["containment"] = "job" if managed.job is not None else "scan_only_incomplete"
                     with _REG_LOCK:
@@ -632,6 +701,7 @@ def ensure_recovered() -> None:
                     _audit_quiet("process.recover", "LOST", process_id=meta["id"])
             except Exception as exc:   # one damaged record must not block recovery of the others
                 _audit_quiet("process.recover", "SKIPPED_CORRUPT", directory=directory.name, reason=type(exc).__name__)
+        _prune_old()                          # only AFTER recovery has reconciled jobs and recorded survivors
         _RECOVERED = True
 
 
@@ -668,7 +738,9 @@ def _stop_orphans(managed: Managed) -> list[int]:
     remaining = []
     problem: str | None = None
     name = meta.get("job_name")
-    job = procs.Job.open(name) if name else None
+    job = _open_owned_job(meta) if name else None
+    if name and job is None and _holder_clean(meta):
+        meta["job_clean"] = True
     if name and job is None and not meta.get("job_clean"):
         # the job cannot be reached (holder gone, name released) and was never observed empty
         meta["containment"] = "job_unreachable"
