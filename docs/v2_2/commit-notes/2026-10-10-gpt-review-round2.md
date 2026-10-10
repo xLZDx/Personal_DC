@@ -114,3 +114,11 @@ key `launch_requires_approval` (default `True`; repository behaviour and all rev
 overlay sets it to `false`: `authorize_launch` then returns without a per-run approval (audited as `launch.approval_waived`),
 while `deny_deletion` (shell text, argv, git deletion forms) and every other hard refusal still apply. Tests: default still
 requires approval for `git worktree add`; with the switch it runs; shell deletion, forced branch deletion and `git clean` stay refused.
+
+## Round 10: secondary blockers are OFF by default (operator decision)
+
+After nine review rounds that all targeted the optional "auto-trusted git" mode, the operator ruled that nothing but irreversible/destructive
+actions may block development. Shipped defaults are now `launch_requires_approval=false` and `git_auto_trust=false` (both overlay-configurable;
+`deny_deletion=true` unchanged). With approvals off there is no free-git path, so the hardening from rounds 3-9 (config provenance, containment,
+reparse points, alternates, nested repositories) only applies when an operator opts in. Tests: the shipped defaults are asserted; the approval
+machinery tests opt in through the test overlay. Full run: 1484 passed, 4 skipped. Global rule recorded in `~/.claude/CLAUDE.md` (no secondary blockers).

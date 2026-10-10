@@ -282,7 +282,8 @@ def guard_git_args(args: list[str], cwd: Path | None = None) -> tuple[list[str],
         raise PolicyError("GIT_FORCE_OR_DELETE_PUSH_NOT_ALLOWED")
     if sub in ("config", "credential", "filter-branch", "daemon", "http-backend"):
         raise PolicyError("GIT_SUBCOMMAND_NOT_ALLOWED")
-    free = set(native_config()["git_free_subcommands"])
+    cfg = native_config()
+    free = set(cfg["git_free_subcommands"]) if cfg.get("git_auto_trust") else set()
     trusted, _why = git_is_free(sub, list(args[1:]), cwd, free, git_config_risk)
     rest = list(args)
     if sub in ("diff", "log", "show"):       # never run an external diff driver / textconv from repository config
@@ -305,7 +306,7 @@ def authorize_launch(mode: str, exe_path: Path, env: dict[str, str], params: dic
         raise PolicyError("UNKNOWN_TRUST_MODE")
     if mode == READ_ONLY:
         return None
-    if not native_config().get("launch_requires_approval", True):
+    if not native_config().get("launch_requires_approval", False):
         audit("launch.approval_waived", "OK", mode=mode, exe=str(exe_path), by="operator_overlay")
         return None
     if mode == WORKSPACE_WRITE and not force_approval and is_trusted_dev_tool(exe_path, env):

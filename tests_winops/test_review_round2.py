@@ -336,7 +336,14 @@ def test_nested_submodule_with_a_gitfile_pointing_outside_is_never_free(work, tm
     assert via_start["status"] == "APPROVAL_REQUIRED"
 
 
-def test_default_still_requires_approval_for_non_free_git_and_interpreters(work):
+def test_shipped_defaults_never_block_development_but_keep_the_deletion_policy():
+    from dc_v2.winops import common
+    cfg = common._DEFAULT_CONFIG
+    assert cfg["launch_requires_approval"] is False and cfg["git_auto_trust"] is False
+    assert cfg["deny_deletion"] is True                                  # irreversible/destructive stays refused
+
+
+def test_with_approvals_switched_on_non_free_git_still_requires_one(work):
     _repo_with_commit(work / "w1")
     out = ct.command_execute("", shell="exec", argv=["git.exe", "worktree", "add", str(work / "wt1")],
                              cwd=str(work / "w1"), mode="workspace_write")

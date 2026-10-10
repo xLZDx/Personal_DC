@@ -38,6 +38,10 @@ def isolated_state(tmp_path, monkeypatch):
     allowed = tmp_path / "work"
     allowed.mkdir()
     _write_policy(tmp_path / "home", [allowed])
+    (state / "config").mkdir()
+    # the shipped defaults are approvals OFF / auto-git OFF; the approval machinery's tests opt in explicitly
+    (state / "config" / "native.json").write_text(
+        '{"launch_requires_approval": true, "git_auto_trust": true}', encoding="utf-8")
     return state
 
 

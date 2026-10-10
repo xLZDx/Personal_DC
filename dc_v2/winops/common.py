@@ -427,9 +427,13 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     # git subcommands in git_free_subcommands). Interpreters (python/node/npm/dotnet/pip) are
     # deliberately NOT here: they are arbitrary code execution and need an approval.
     "dev_executables": ["git.exe"],
-    # Operator switch (overlay only): False = commands/processes launch WITHOUT a per-run approval; the tool-level
-    # deletion policy (deny_deletion) and every other hard refusal still apply. Default keeps approvals.
-    "launch_requires_approval": True,
+    # Per-run approval for command/process launches. OFF by default (operator decision 2026-10-10: nothing that is
+    # not irreversible/destructive may block development). The tool-level deletion policy (deny_deletion) and every
+    # other hard refusal still apply. The operator can turn approvals back on in the local overlay.
+    "launch_requires_approval": False,
+    # Approval-free ("auto-trusted") git only matters when approvals are on, and is OPT-IN (overlay only): its
+    # hardening (config provenance, containment, reparse points, alternates, nested repositories) is review surface.
+    "git_auto_trust": False,
     "deny_deletion": True,   # tool-level "no deletion" policy (winops/deletion_policy.py); operator may not weaken it remotely
     "git_free_subcommands": ["status", "diff", "log", "show", "branch", "rev-parse", "ls-files", "add",
                              "commit", "switch", "blame", "describe", "shortlog", "remote"],

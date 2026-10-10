@@ -141,3 +141,8 @@ Durable decisions and evidence only. Newest entries at the bottom. Full per-comm
 * **Decision:** nested `.git` entries make free git unavailable; new overlay-only switch `launch_requires_approval=false` (live overlay set) waives
   per-run launch approvals, keeping the deletion policy. Repository default unchanged. I will not grant approvals myself unless asked.
 * **Verification:** full suite green (agent-run, no CI).
+
+## 2026-10-10 — Secondary blockers OFF by default (operator, global)
+* **Evidence:** nine GPT rounds on the optional auto-trusted git mode; GPT-generated approval requests (AEVE script, ERP worktree add) blocked the operator's commander.
+* **Decision:** `launch_requires_approval=false`, `git_auto_trust=false` shipped defaults; deletion policy stays; global rule "no secondary blockers" added to ~/.claude/CLAUDE.md (snapshot in ~/.claude/backups/no-secondary-blockers-2026-10-10/) and to memory.
+* **Verification:** full suite 1484 passed, 4 skipped (agent-run, no CI).
