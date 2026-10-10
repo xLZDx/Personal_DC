@@ -134,3 +134,10 @@ Durable decisions and evidence only. Newest entries at the bottom. Full per-comm
 * **Decision:** free git requires no reparse point anywhere under the git dir, alternate stores and the work tree (bounded scan, fail closed);
   retention/reconcile/stop use (pid, creation time) identity and keep records with any live job member.
 * **Limit:** file-symlink regression tests simulate the reparse tag (no symlink privilege in the test shell).
+
+## 2026-10-10 — GPT round 9 remediation (F01 nested submodules) and operator launch-approval switch
+* **Evidence:** GPT-PM round 9 on 9444ba2 = REQUEST_CHANGES (F01 BLOCKER only; F09 verified). Operator (twice) required the commander to run
+  any non-destructive command without approvals; GPT kept generating approval requests (AEVE py script, ERP worktree add).
+* **Decision:** nested `.git` entries make free git unavailable; new overlay-only switch `launch_requires_approval=false` (live overlay set) waives
+  per-run launch approvals, keeping the deletion policy. Repository default unchanged. I will not grant approvals myself unless asked.
+* **Verification:** full suite green (agent-run, no CI).

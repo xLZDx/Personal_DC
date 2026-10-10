@@ -196,9 +196,12 @@ def _tree_reparse_risk(root: Path, budget: list[int], *, skip_git: bool) -> str 
     to verify is not provably contained, so free git is refused."""
     stack = [root]
     while stack:
-        with os.scandir(stack.pop()) as entries:
+        current = stack.pop()
+        with os.scandir(current) as entries:
             for entry in entries:
                 if skip_git and entry.name.casefold() == ".git":
+                    if current != root:                  # a nested repository/submodule: its git dir is unvalidated
+                        return "GIT_NESTED_REPOSITORY"   # (a .git FILE can point anywhere); only the outer .git is skipped
                     continue
                 budget[0] -= 1
                 if budget[0] < 0:
@@ -301,6 +304,9 @@ def authorize_launch(mode: str, exe_path: Path, env: dict[str, str], params: dic
     if mode not in (READ_ONLY, WORKSPACE_WRITE, ELEVATED):
         raise PolicyError("UNKNOWN_TRUST_MODE")
     if mode == READ_ONLY:
+        return None
+    if not native_config().get("launch_requires_approval", True):
+        audit("launch.approval_waived", "OK", mode=mode, exe=str(exe_path), by="operator_overlay")
         return None
     if mode == WORKSPACE_WRITE and not force_approval and is_trusted_dev_tool(exe_path, env):
         return None

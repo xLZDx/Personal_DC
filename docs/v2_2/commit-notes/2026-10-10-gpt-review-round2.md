@@ -98,3 +98,19 @@ GPT verification round 8 on 94150dd: F01 (BLOCKER) and F09 retention identity (M
 | F09 identity | Membership/root decisions use (pid, creation time): `_is_root` (reconcile, stop, finalize, `_record_descendants`) and `_must_retain` (no pid-only exclusion at all: ANY job member retains the record; also retained when the original root is alive or `kill_verified is False`). Tests: root alive + `kill_verified=False`, root alive, same pid with a different creation time; record stays addressable and `process_stop` ends the member. |
 
 Tests: full run passed (see commit message for the count).
+
+## Round 9 remediation (follow-up commit)
+
+GPT verification round 9 on 9444ba2: F09 verified; F01 (BLOCKER) open: nested submodules.
+
+| Finding | Change |
+|---|---|
+| F01 nested repositories | `_tree_reparse_risk` skips ONLY the outer repository's `.git`; a `.git` entry (directory or gitfile) at any deeper level returns `GIT_NESTED_REPOSITORY` (a gitfile can point anywhere, so a submodule-aware diff could read an external repository). Test: submodule whose `.git` file points to a private repo; `diff --submodule=log|diff`, `status`, `log` are not free; `command_execute`/`process_start` => APPROVAL_REQUIRED; plain repositories stay free. |
+
+## Operator policy switch (not a GPT finding)
+
+The operator instructed that the commander must run any command except irreversible/destructive ones. New overlay-only
+key `launch_requires_approval` (default `True`; repository behaviour and all review-visible defaults unchanged). The live
+overlay sets it to `false`: `authorize_launch` then returns without a per-run approval (audited as `launch.approval_waived`),
+while `deny_deletion` (shell text, argv, git deletion forms) and every other hard refusal still apply. Tests: default still
+requires approval for `git worktree add`; with the switch it runs; shell deletion, forced branch deletion and `git clean` stay refused.

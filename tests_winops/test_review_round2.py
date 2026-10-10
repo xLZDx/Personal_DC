@@ -316,6 +316,52 @@ def test_self_contained_repository_with_real_objects_stays_free(work):
     assert pt.guard_git_args(["show", "HEAD"], work / "ok")[1] is True
 
 
+def test_nested_submodule_with_a_gitfile_pointing_outside_is_never_free(work, tmp_path):
+    outside_commit_repo = tmp_path / "private_repo"
+    _repo_with_commit(outside_commit_repo)
+    outer = work / "outer"
+    outer.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=outer, check=True, capture_output=True)
+    assert pt.guard_git_args(["status"], outer)[1] is True
+    sub = outer / "sub"
+    sub.mkdir()
+    (sub / "f.txt").write_text("x\n", encoding="utf-8")
+    (sub / ".git").write_text(f"gitdir: {(outside_commit_repo / '.git').as_posix()}\n", encoding="utf-8")   # plain file
+    for args in (["diff", "--submodule=log"], ["diff", "--submodule=diff"], ["status"], ["log"]):
+        assert pt.guard_git_args(args, outer)[1] is False, args
+    via_exec = ct.command_execute("", shell="exec", argv=["git.exe", "diff", "--submodule=log"], cwd=str(outer),
+                                  mode="workspace_write")
+    assert via_exec["status"] == "APPROVAL_REQUIRED"
+    via_start = pt.process_start("git.exe", ["diff", "--submodule=diff"], cwd=str(outer), mode="workspace_write")
+    assert via_start["status"] == "APPROVAL_REQUIRED"
+
+
+def test_default_still_requires_approval_for_non_free_git_and_interpreters(work):
+    _repo_with_commit(work / "w1")
+    out = ct.command_execute("", shell="exec", argv=["git.exe", "worktree", "add", str(work / "wt1")],
+                             cwd=str(work / "w1"), mode="workspace_write")
+    assert out["status"] == "APPROVAL_REQUIRED"
+
+
+def test_operator_switch_waives_launch_approvals_but_never_the_deletion_policy(work, native_overlay):
+    native_overlay(launch_requires_approval=False)
+    _repo_with_commit(work / "w2")
+    made = ct.command_execute("", shell="exec", argv=["git.exe", "worktree", "add", "-b", "review/x", str(work / "wt2")],
+                              cwd=str(work / "w2"), mode="workspace_write")
+    assert made.get("status") != "APPROVAL_REQUIRED" and made["exit_code"] == 0 and (work / "wt2").is_dir()
+    ran = ct.command_execute("", shell="exec", argv=[sys.executable, "-c", "print(40+2)"], cwd=str(work), mode="workspace_write")
+    assert ran["exit_code"] == 0 and "42" in ran["stdout"]
+    shell = ct.command_execute("Write-Output switched", shell="powershell", cwd=str(work), mode="workspace_write")
+    assert shell["exit_code"] == 0 and "switched" in shell["stdout"]
+    with pytest.raises(PolicyError, match="DELETION_NOT_ALLOWED"):                      # still refused, switch or not
+        ct.command_execute(r"Remove-Item C:\x", shell="powershell", cwd=str(work), mode="elevated")
+    with pytest.raises(PolicyError, match="DELETION_NOT_ALLOWED"):
+        ct.command_execute("", shell="exec", argv=["git.exe", "branch", "-D", "review/x"], cwd=str(work / "w2"),
+                           mode="workspace_write")
+    with pytest.raises(PolicyError, match="DELETION_NOT_ALLOWED"):
+        pt.process_start("git.exe", ["clean", "-fd"], cwd=str(work / "w2"), mode="workspace_write")
+
+
 def test_unreadable_git_config_means_not_free(tmp_path, monkeypatch):
     plain = tmp_path / "work" / "plain"                  # not a repository: git config --list still works (global)
     plain.mkdir(parents=True)

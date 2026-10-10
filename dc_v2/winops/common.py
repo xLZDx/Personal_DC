@@ -427,6 +427,9 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     # git subcommands in git_free_subcommands). Interpreters (python/node/npm/dotnet/pip) are
     # deliberately NOT here: they are arbitrary code execution and need an approval.
     "dev_executables": ["git.exe"],
+    # Operator switch (overlay only): False = commands/processes launch WITHOUT a per-run approval; the tool-level
+    # deletion policy (deny_deletion) and every other hard refusal still apply. Default keeps approvals.
+    "launch_requires_approval": True,
     "deny_deletion": True,   # tool-level "no deletion" policy (winops/deletion_policy.py); operator may not weaken it remotely
     "git_free_subcommands": ["status", "diff", "log", "show", "branch", "rev-parse", "ls-files", "add",
                              "commit", "switch", "blame", "describe", "shortlog", "remote"],
