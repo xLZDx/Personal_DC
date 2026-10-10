@@ -87,3 +87,14 @@ GPT verification round 7 on 2f9d194: F01 (BLOCKER) and two F09 items (MAJOR) ope
 | F09 name reuse | A job found under a name is trusted only if the holder recorded at launch (`meta.job_holder` pid + creation time) is still alive (`_open_owned_job`); otherwise the job is "unreachable" and is NEVER terminated by name (identity fallback + explicit `JOB_UNREACHABLE` failure). The holder writes `procs/<id>/holder.clean` when the job had members and emptied, which gives a durable proof across restarts (`_holder_clean`). Test: original job retired, another job created under the same name with an unrelated process; `process_stop` leaves it alone. |
 
 Tests: full run 1473 passed, 4 skipped.
+
+## Round 8 remediation (follow-up commit)
+
+GPT verification round 8 on 94150dd: F01 (BLOCKER) and F09 retention identity (MAJOR) open; job-name reuse verified.
+
+| Finding | Change |
+|---|---|
+| F01 object FILES | `_tree_reparse_risk` walks EVERY entry under the git dir (loose objects, pack/idx files, refs, config...), under each alternate store (and the store itself), and the work tree (budget 200000 entries shared by one check; too large to verify => not free). Any symlink/junction/mount point (`is_symlink`/`is_junction`/`common.is_reparse`) => not free. Test limitation: the test shell has no symlink privilege (WinError 1314), so the loose-object and pack/idx cases use a stand-in file with a simulated reparse tag for exactly that path (real `mklink /J` junction tests for directories remain native). |
+| F09 identity | Membership/root decisions use (pid, creation time): `_is_root` (reconcile, stop, finalize, `_record_descendants`) and `_must_retain` (no pid-only exclusion at all: ANY job member retains the record; also retained when the original root is alive or `kill_verified is False`). Tests: root alive + `kill_verified=False`, root alive, same pid with a different creation time; record stays addressable and `process_stop` ends the member. |
+
+Tests: full run passed (see commit message for the count).

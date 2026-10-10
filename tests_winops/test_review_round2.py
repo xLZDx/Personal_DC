@@ -269,6 +269,53 @@ def test_alternate_store_reached_through_a_junction_is_never_free(work, tmp_path
     assert pt.guard_git_args(["status"], inside_a)[1] is False
 
 
+def _file_symlink(link, target, monkeypatch):
+    """Create a real file symlink; without the privilege (Developer Mode / elevation) simulate the reparse tag for
+    exactly that path, so the policy code path is still exercised (and say so)."""
+    try:
+        os.symlink(target, link)
+    except OSError:
+        real = pt.is_reparse
+        marked = os.path.normcase(str(link))
+        monkeypatch.setattr(pt, "is_reparse", lambda p: os.path.normcase(str(p)) == marked or real(p))
+        link.write_bytes(b"x")                              # a stand-in file that the simulated tag redirects
+
+
+def test_individual_loose_object_symlinked_to_another_repo_is_never_free(repo, tmp_path, monkeypatch):
+    outside = tmp_path / "private_repo"
+    commit = _repo_with_commit(outside)
+    outside_loose = outside / ".git" / "objects" / commit[:2] / commit[2:]
+    assert outside_loose.is_file()
+    local_dir = repo / ".git" / "objects" / commit[:2]
+    local_dir.mkdir(parents=True, exist_ok=True)
+    _file_symlink(local_dir / commit[2:], outside_loose, monkeypatch)
+    assert pt.guard_git_args(["status"], repo)[1] is False
+    for args in (["show", commit], ["cat-file", "-p", commit], ["log", commit]):
+        assert pt.guard_git_args(args, repo)[1] is False, args
+    via_exec = ct.command_execute("", shell="exec", argv=["git.exe", "show", commit], cwd=str(repo), mode="workspace_write")
+    assert via_exec["status"] == "APPROVAL_REQUIRED"
+    via_start = pt.process_start("git.exe", ["show", commit], cwd=str(repo), mode="workspace_write")
+    assert via_start["status"] == "APPROVAL_REQUIRED"
+
+
+def test_pack_and_index_files_symlinked_outside_are_never_free(repo, tmp_path, monkeypatch):
+    outside = tmp_path / "private_repo"
+    _repo_with_commit(outside)
+    subprocess.run(["git", "gc", "-q"], cwd=outside, check=True, capture_output=True)
+    packs = list((outside / ".git" / "objects" / "pack").glob("*"))
+    assert packs
+    local_pack = repo / ".git" / "objects" / "pack"
+    local_pack.mkdir(parents=True, exist_ok=True)
+    _file_symlink(local_pack / packs[0].name, packs[0], monkeypatch)
+    assert pt.guard_git_args(["status"], repo)[1] is False
+
+
+def test_self_contained_repository_with_real_objects_stays_free(work):
+    _repo_with_commit(work / "ok")
+    assert pt.guard_git_args(["log", "-n", "1"], work / "ok")[1] is True
+    assert pt.guard_git_args(["show", "HEAD"], work / "ok")[1] is True
+
+
 def test_unreadable_git_config_means_not_free(tmp_path, monkeypatch):
     plain = tmp_path / "work" / "plain"                  # not a repository: git config --list still works (global)
     plain.mkdir(parents=True)
@@ -358,7 +405,7 @@ def test_more_than_100_descendants_are_tracked_and_overflow_is_flagged(monkeypat
 def test_record_descendants_skips_root_and_duplicates_but_not_a_reused_pid(monkeypatch):
     created = {6: 100}
     monkeypatch.setattr(procs, "creation_time", lambda pid: created.get(pid, pid + 1))
-    managed = SimpleNamespace(meta={"pid": 5, "orphans": []}, lock=threading.RLock(), save=lambda: None)
+    managed = SimpleNamespace(meta={"pid": 5, "created": 6, "orphans": []}, lock=threading.RLock(), save=lambda: None)
     assert pt._record_descendants(managed, [5, 6, 6]) is True
     assert [o["pid"] for o in managed.meta["orphans"]] == [6]
     assert pt._record_descendants(managed, [5, 6]) is False

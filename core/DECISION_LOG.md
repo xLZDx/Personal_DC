@@ -128,3 +128,9 @@ Durable decisions and evidence only. Newest entries at the bottom. Full per-comm
   unproven job emptiness are kept; a job is re-opened and terminated only when its recorded holder (pid + creation time) is alive;
   durable `holder.clean` marker proves emptiness across restarts.
 * **Verification:** full suite 1473 passed, 4 skipped (agent-run, no CI).
+
+## 2026-10-10 — GPT round 8 remediation (F01 object files, F09 identity-based retention)
+* **Evidence:** GPT-PM round 8 on 94150dd = REQUEST_CHANGES (F01 BLOCKER, F09 MAJOR; job-name reuse verified). Detail: commit note "Round 8".
+* **Decision:** free git requires no reparse point anywhere under the git dir, alternate stores and the work tree (bounded scan, fail closed);
+  retention/reconcile/stop use (pid, creation time) identity and keep records with any live job member.
+* **Limit:** file-symlink regression tests simulate the reparse tag (no symlink privilege in the test shell).

@@ -177,38 +177,40 @@ def _git_containment_risk(exe: Path, cwd: Path, env: dict[str, str]) -> str | No
         gitdir = Path(lines[1].strip())
         if os.path.normcase(os.path.normpath(str(gitdir))) != os.path.normcase(os.path.normpath(str(toplevel / ".git"))):
             return "GIT_DIR_NOT_INSIDE_WORKTREE"   # separate git dirs / linked worktrees: not provably contained
-        for part in (gitdir, gitdir / "objects", gitdir / "objects" / "info", gitdir / "objects" / "pack"):
-            if is_reparse(part):
-                return "GIT_OBJECT_DATABASE_REDIRECTED"       # a junction/symlink can point the store anywhere
-        return _alternates_risk(gitdir / "objects", 0) or _worktree_reparse_risk(toplevel)
+        if is_reparse(gitdir):
+            return "GIT_OBJECT_DATABASE_REDIRECTED"
+        budget = [MAX_REPARSE_SCAN_ENTRIES]
+        # every entry under the git dir (loose objects, packs, indexes, refs, config...) must be a real file/directory
+        return (_tree_reparse_risk(gitdir, budget, skip_git=False) or _alternates_risk(gitdir / "objects", 0, budget)
+                or _tree_reparse_risk(toplevel, budget, skip_git=True))
     except (OSError, subprocess.SubprocessError, PolicyError):
         return "GIT_WORKTREE_OUTSIDE_ALLOWED_ROOTS"
 
 
-MAX_WORKTREE_SCAN_ENTRIES = 60000
+MAX_REPARSE_SCAN_ENTRIES = 200000
 
 
-def _worktree_reparse_risk(toplevel: Path) -> str | None:
-    """git follows junctions into other directories (``git add -A`` would stage them): free git needs a work tree
-    without reparse points; one too large to verify is not provably contained."""
-    seen = 0
-    stack = [toplevel]
+def _tree_reparse_risk(root: Path, budget: list[int], *, skip_git: bool) -> str | None:
+    """Symlinks/junctions/mount points anywhere in a tree let git read or stage data from another location: a
+    redirected object file or directory, a work-tree junction. ``budget`` is shared by the whole check; a tree too large
+    to verify is not provably contained, so free git is refused."""
+    stack = [root]
     while stack:
         with os.scandir(stack.pop()) as entries:
             for entry in entries:
-                if entry.name.casefold() == ".git":
+                if skip_git and entry.name.casefold() == ".git":
                     continue
-                seen += 1
-                if seen > MAX_WORKTREE_SCAN_ENTRIES:
-                    return "GIT_WORKTREE_TOO_LARGE_TO_VERIFY"
-                if entry.is_symlink() or entry.is_junction():
-                    return "GIT_WORKTREE_CONTAINS_REPARSE_POINT"
+                budget[0] -= 1
+                if budget[0] < 0:
+                    return "GIT_TREE_TOO_LARGE_TO_VERIFY"
+                if entry.is_symlink() or entry.is_junction() or is_reparse(Path(entry.path)):
+                    return "GIT_TREE_CONTAINS_REPARSE_POINT"
                 if entry.is_dir(follow_symlinks=False):
                     stack.append(Path(entry.path))
     return None
 
 
-def _alternates_risk(objects: Path, depth: int) -> str | None:
+def _alternates_risk(objects: Path, depth: int, budget: list[int]) -> str | None:
     """Every effective object store (``objects/info/alternates``, recursively) must be a ``<root>/.git/objects`` whose
     ``<root>`` is inside the allowed roots; anything else (outside, odd layout, http-alternates, too deep, unreadable)
     disables approval-free git, because git reads objects from alternates as if they were local."""
@@ -232,13 +234,13 @@ def _alternates_risk(objects: Path, depth: int) -> str | None:
         store = Path(os.path.normpath(str(store)))
         if store.name.casefold() != "objects" or store.parent.name.casefold() != ".git":
             return "GIT_ALTERNATE_OUTSIDE_ALLOWED_ROOTS"
-        if any(is_reparse(part) for part in (store.parent, store, store / "info", store / "pack")):
+        if is_reparse(store.parent) or is_reparse(store) or _tree_reparse_risk(store, budget, skip_git=False):
             return "GIT_OBJECT_DATABASE_REDIRECTED"
         try:
             safe_path(str(store.parent.parent))
         except PolicyError:
             return "GIT_ALTERNATE_OUTSIDE_ALLOWED_ROOTS"
-        nested = _alternates_risk(store, depth + 1)
+        nested = _alternates_risk(store, depth + 1, budget)
         if nested:
             return nested
     return None
@@ -368,7 +370,7 @@ def _launch(*, kind: str, label: str, argv: list[str] | None, cmdline: str | Non
     job = None
     popen = None
     try:
-        job_name = None if kill_orphans else "Local\pdc-job-" + pid_id      # detached trees stay reachable after a restart
+        job_name = None if kill_orphans else "Local\\pdc-job-" + pid_id      # detached trees stay reachable after a restart
         job = procs.Job(memory_limit_bytes=(memory_limit_mb or 0) * 1024 * 1024 or None,
                         max_active=64 if kill_orphans else None, kill_on_close=kill_orphans, name=job_name,
                         hosted=job_name is not None, require_independent_holder=require_independent_holder,
@@ -461,10 +463,8 @@ def _record_descendants(managed: Managed, pids: list[int]) -> bool:
     known = {(o["pid"], o["created"]) for o in meta["orphans"]}          # identity = pid + creation time (PIDs get reused)
     added = False
     for pid in pids:
-        if pid == meta.get("pid"):
-            continue
         created = procs.creation_time(pid)
-        if not created or (pid, created) in known:
+        if not created or (pid, created) in known or (pid == meta.get("pid") and created == meta.get("created")):
             continue
         if len(meta["orphans"]) >= MAX_TRACKED_DESCENDANTS:
             meta["orphans_truncated"] = True
@@ -497,7 +497,7 @@ def _finalize(managed: Managed, exit_code: int | None, state: str) -> None:
                 else:       # explicit detach: last chance to record descendants (merged with those tracked live)
                     members = job.pids()
                     _record_descendants(managed, members)
-                    if job.query_ok and not [p for p in members if p != managed.meta.get("pid")]:
+                    if job.query_ok and not [p for p in members if not _is_root(managed.meta, p)]:
                         managed.meta["job_clean"] = True      # nothing is left that could spawn anything
                         with managed.lock, contextlib.suppress(Exception):
                             managed.save()
@@ -595,8 +595,10 @@ def _monitor_loop(managed: Managed) -> None:
 
 def _must_retain(data: dict[str, Any]) -> bool:
     """A record that is still the only handle on live or unverified descendants is never expired."""
-    if data.get("stop_incomplete"):
+    if data.get("stop_incomplete") or data.get("kill_verified") is False:
         return True
+    if data.get("pid") and data.get("created") and procs.is_alive(data["pid"], data["created"]):
+        return True                           # the original root itself is still running
     for item in data.get("orphans") or []:
         if procs.is_alive(item.get("pid"), item.get("created")):
             return True
@@ -606,8 +608,7 @@ def _must_retain(data: dict[str, Any]) -> bool:
     if job is None:
         return True                           # emptiness was never established and the job cannot be inspected
     try:
-        members = [p for p in job.pids() if p != data.get("pid")]
-        return bool(members) or not job.query_ok
+        return bool(job.pids()) or not job.query_ok       # ANY member counts: no pid-only exclusion of the root
     finally:
         job.close()
 
@@ -621,6 +622,11 @@ def _prune_old() -> None:
                 data = read_json(meta, {})
                 if data.get("state") in TERMINAL and not _must_retain(data):
                     shutil.rmtree(directory, ignore_errors=True)
+
+
+def _is_root(meta: dict[str, Any], pid: int) -> bool:
+    """True only for the recorded root process itself: same pid AND same creation time (a reused pid is a stranger)."""
+    return bool(pid == meta.get("pid") and meta.get("created") and procs.creation_time(pid) == meta.get("created"))
 
 
 def _holder_clean(meta: dict[str, Any]) -> bool:
@@ -653,7 +659,7 @@ def _reconcile_job_survivors(managed: Managed) -> None:
             managed.meta["containment"] = "job_unreachable"     # unsampled descendants cannot be ruled out
         return
     try:
-        members = [p for p in job.pids() if p != managed.meta.get("pid")]
+        members = [p for p in job.pids() if not _is_root(managed.meta, p)]
         if not members and job.query_ok:
             managed.meta["job_clean"] = True
         if members:
@@ -747,7 +753,7 @@ def _stop_orphans(managed: Managed) -> list[int]:
         problem = "JOB_UNREACHABLE"
     try:
         if job is not None:                   # the kernel job is the authority on membership, not sampled PIDs
-            members = [p for p in job.pids() if p != meta.get("pid")]
+            members = [p for p in job.pids() if not _is_root(meta, p)]
             if members:
                 _record_descendants(managed, members)
             identities = [(o["pid"], o["created"]) for o in meta.get("orphans") or [] if o["pid"] in members]

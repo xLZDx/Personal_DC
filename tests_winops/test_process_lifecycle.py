@@ -825,3 +825,54 @@ def test_a_job_re_created_under_the_same_name_is_never_terminated_for_a_finished
     finally:
         impostor_job.close()
         bystander.kill()
+
+
+def _expired_terminal_record_with_member(isolated_state, work, rid, root_created_delta, **extra):
+    """Terminal record whose recorded root pid is a LIVE member of its (hosted) job, as after a failed root kill."""
+    job = procs.Job(name="Local\\pdc-job-" + rid, hosted=True)
+    member = subprocess.Popen([PY, "-c", "import time;time.sleep(120)"], stdin=subprocess.DEVNULL,
+                              creationflags=subprocess.CREATE_NO_WINDOW)
+    assert _wait(lambda: procs.creation_time(member.pid), 10)
+    assert job.assign(int(member._handle))
+    directory = _write_record(isolated_state, rid, work, state="exited", exe=PY, pid=member.pid,
+                              created=procs.creation_time(member.pid) + root_created_delta,
+                              job_name="Local\\pdc-job-" + rid,
+                              job_holder={"pid": job.holder_pid, "created": job.holder_created}, **extra)
+    old = time.time() - 40 * 86400
+    os.utime(directory / "meta.json", (old, old))
+    return job, member, directory
+
+
+@pytest.mark.parametrize("delta, extra", [
+    (0, {"kill_verified": False}),            # the root is still alive and its termination was never verified
+    (0, {}),                                  # root alive, terminal state recorded anyway
+    (1, {}),                                  # same PID, different creation time: a stranger, still a live member
+])
+def test_retention_never_discards_a_record_while_its_job_still_has_a_live_member(isolated_state, work, delta, extra):
+    rid = "prc-9999999999999984"
+    job, member, directory = _expired_terminal_record_with_member(isolated_state, work, rid, delta, **extra)
+    try:
+        pt._prune_old()
+        assert directory.is_dir()                                          # kept: addressable by the original id
+        pt._RECOVERED = False
+        pt.ensure_recovered()
+        assert directory.is_dir()
+        result = pt.process_stop(rid)
+        assert member.pid in result["orphans_stopped"] or _wait(lambda: member.poll() is not None, 15)
+        assert _wait(lambda: member.poll() is not None, 15)
+    finally:
+        job.close()
+        member.kill()
+
+
+def test_reused_root_pid_is_not_mistaken_for_the_root_when_reconciling(isolated_state, work):
+    rid = "prc-9999999999999983"
+    job, member, directory = _expired_terminal_record_with_member(isolated_state, work, rid, 1)
+    try:
+        meta = pt.get_managed(rid, "process").meta
+        assert pt._is_root(meta, member.pid) is False                      # same pid, other creation time
+        meta["created"] = procs.creation_time(member.pid)
+        assert pt._is_root(meta, member.pid) is True
+    finally:
+        job.close()
+        member.kill()
