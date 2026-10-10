@@ -122,3 +122,14 @@ actions may block development. Shipped defaults are now `launch_requires_approva
 `deny_deletion=true` unchanged). With approvals off there is no free-git path, so the hardening from rounds 3-9 (config provenance, containment,
 reparse points, alternates, nested repositories) only applies when an operator opts in. Tests: the shipped defaults are asserted; the approval
 machinery tests opt in through the test overlay. Full run: 1484 passed, 4 skipped. Global rule recorded in `~/.claude/CLAUDE.md` (no secondary blockers).
+
+## Round 11: unconditional destructive-git policy completed
+
+GPT final round on a03958c: one BLOCKER in the DEFAULT configuration (approvals off): destructive git forms the deletion policy did not recognise
+(`reset --har`, `checkout --for`, `restore --staged --worktree`, `gc`). `deletion_policy.git_deletes` was rewritten: option abbreviations
+(`_abbrev`: any >=2-char prefix of a destructive long option, also `--force-with-lease`), combined short flags, `restore` allowed only when it is
+staged-only, destructive housekeeping (`gc`, `repack`, `prune*`, `maintenance`), force pushes (`--force*`, `-f`, `+ref`), `-c alias.*` overrides.
+Known limitation: a user-defined alias stored in a git config file cannot be resolved by a text policy. Tests: 21 destructive forms refused through
+`command_execute` and `process_start` with the shipped defaults, 17 ordinary forms not flagged, a repository whose uncommitted edit survives the four
+reported forms. Verification: targeted run `test_review_round2.py` + `test_deletion_policy.py` = 206 passed; the full suite was NOT re-run for this
+commit (operator said to skip it); last full run before this change: 1484 passed, 4 skipped.

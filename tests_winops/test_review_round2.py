@@ -369,6 +369,45 @@ def test_operator_switch_waives_launch_approvals_but_never_the_deletion_policy(w
         pt.process_start("git.exe", ["clean", "-fd"], cwd=str(work / "w2"), mode="workspace_write")
 
 
+DESTRUCTIVE_GIT = [
+    ["reset", "--har", "HEAD"], ["reset", "--hard", "HEAD"], ["reset", "--mer"], ["checkout", "--for", "HEAD"],
+    ["checkout", "--force", "HEAD"], ["checkout", "--", "a.txt"], ["restore", "--staged", "--worktree", "a.txt"],
+    ["restore", "a.txt"], ["restore", "-W", "a.txt"], ["restore", "--worktree", "a.txt"], ["gc"], ["gc", "--prune=now"],
+    ["repack", "-ad"], ["maintenance", "run"], ["push", "--force"], ["push", "-f", "origin", "x"], ["push", "origin", "+main"],
+    ["push", "--force-with-lease"], ["branch", "--del", "x"], ["switch", "--discard-changes", "m"],
+    ["-c", "alias.x=reset --hard", "x"],
+]
+SAFE_GIT = [["status"], ["log", "-n", "3"], ["diff"], ["add", "-A"], ["commit", "-m", "x"], ["restore", "--staged", "a.txt"],
+            ["restore", "--sta", "a.txt"], ["push", "origin", "main"], ["branch", "new"], ["checkout", "-b", "feature"],
+            ["switch", "main"], ["merge", "x"], ["rebase", "main"], ["pull"], ["tag", "v1"], ["stash"],
+            ["worktree", "add", "-b", "x", "../p", "abc"]]
+
+
+@pytest.mark.parametrize("args", DESTRUCTIVE_GIT, ids=lambda a: " ".join(a))
+def test_destructive_git_is_refused_before_launch_with_the_shipped_defaults(args, work, native_overlay):
+    native_overlay(launch_requires_approval=False, git_auto_trust=False)          # the shipped defaults
+    with pytest.raises(PolicyError, match="DELETION_NOT_ALLOWED"):
+        ct.command_execute("", shell="exec", argv=["git.exe", *args], cwd=str(work), mode="workspace_write")
+    with pytest.raises(PolicyError, match="DELETION_NOT_ALLOWED"):
+        pt.process_start("git.exe", list(args), cwd=str(work), mode="workspace_write")
+
+
+@pytest.mark.parametrize("args", SAFE_GIT, ids=lambda a: " ".join(a))
+def test_ordinary_git_is_not_flagged_as_destructive(args):
+    assert deletion_policy.git_deletes(args) is None
+
+
+def test_the_four_reported_forms_never_touch_the_repository(work, native_overlay):
+    native_overlay(launch_requires_approval=False, git_auto_trust=False)
+    _repo_with_commit(work / "w4")
+    target = work / "w4" / "secrets.txt"
+    target.write_text("EDITED-UNCOMMITTED\n", encoding="utf-8")
+    for args in (["reset", "--har", "HEAD"], ["checkout", "--for", "HEAD"], ["restore", "--staged", "--worktree", "secrets.txt"], ["gc"]):
+        with pytest.raises(PolicyError, match="DELETION_NOT_ALLOWED"):
+            ct.command_execute("", shell="exec", argv=["git.exe", *args], cwd=str(work / "w4"), mode="workspace_write")
+    assert target.read_text(encoding="utf-8") == "EDITED-UNCOMMITTED\n"             # the uncommitted edit survived
+
+
 def test_unreadable_git_config_means_not_free(tmp_path, monkeypatch):
     plain = tmp_path / "work" / "plain"                  # not a repository: git config --list still works (global)
     plain.mkdir(parents=True)

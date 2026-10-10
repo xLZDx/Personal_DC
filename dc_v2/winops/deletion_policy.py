@@ -37,16 +37,25 @@ _DYNAMIC = re.compile(
 _GIT_SEGMENT = re.compile(r"(?i)(?<![\w.-])git(?:\.exe)?(?![\w-])([^|;&\r\n]*)")
 
 
+def _abbrev(flag: str, full: str, minimum: int = 2) -> bool:
+    """git accepts any unambiguous prefix of a long option (``--har`` is ``--hard``). Being conservative, every prefix of
+    at least ``minimum`` characters of ``full`` counts as that option (``flag`` is the name without leading dashes)."""
+    return len(flag) >= minimum and (full.startswith(flag) or flag.startswith(full))     # also --force-with-lease
+
+
 def git_deletes(args: list[str]) -> str | None:
     """Structured check of one git argument vector (``args`` exclude ``git``); returns the offending form or None.
 
-    Covers destructive ref/work-tree/history operations including long-option aliases and combined short flags.
+    Covers destructive ref/work-tree/history/object operations including long-option abbreviations (``--har``,
+    ``--for``), combined short flags, restore of the work tree, destructive housekeeping and force pushes.
     """
     tokens = [str(a).strip("\"'") for a in args]
     # skip leading global options (-C <dir>, -c k=v, --no-pager, ...): the subcommand is the first bare word
     i, sub = 0, ""
     while i < len(tokens):
         t = tokens[i]
+        if t == "-c" and i + 1 < len(tokens) and tokens[i + 1].casefold().startswith("alias."):
+            return "alias override (can hide a destructive command)"
         if t in ("-C", "-c", "--git-dir", "--work-tree", "--namespace"):
             i += 2
             continue
@@ -55,41 +64,44 @@ def git_deletes(args: list[str]) -> str | None:
             continue
         sub = t.casefold()
         break
-    rest = [t.casefold() for t in tokens[i + 1:]]
-    flags = [t for t in rest if t.startswith("-")]
+    rest_raw = tokens[i + 1:]
+    rest = [t.casefold() for t in rest_raw]
+    flags = [t for t in rest if t.startswith("-") and t != "--"]
     words = [t for t in rest if not t.startswith("-")]
     short = "".join(f[1:] for f in flags if not f.startswith("--"))
-    longs = {f.split("=", 1)[0] for f in flags if f.startswith("--")}
-    long_delete = any(len(l) >= 5 and "--delete".startswith(l) for l in longs)      # --del, --dele, ... abbreviations
-    if sub == "branch" and ("d" in short or long_delete):
+    short_cs = "".join(f[1:] for f in rest_raw if f.startswith("-") and not f.startswith("--"))     # case-sensitive
+    longs = {f.split("=", 1)[0][2:] for f in flags if f.startswith("--")}                          # names without dashes
+
+    def has_long(full: str, minimum: int = 2) -> bool:
+        return any(_abbrev(name, full, minimum) for name in longs)
+
+    if sub == "branch" and ("d" in short or has_long("delete", 3)):
         return "branch delete"
-    if sub == "tag" and ("d" in short or long_delete):
+    if sub == "tag" and ("d" in short or has_long("delete", 3)):
         return "tag delete"
     if sub == "remote" and words[:1] and words[0] in ("remove", "rm", "prune"):
         return "remote " + words[0]
     if sub == "stash" and words[:1] and words[0] in ("drop", "clear"):
         return "stash " + words[0]
-    if sub == "reset" and ({"--hard", "--merge", "--keep"} & longs):
+    if sub == "reset" and (has_long("hard") or has_long("merge") or has_long("keep")):
         return "reset --hard"
-    if sub in ("clean", "rm", "filter-branch", "filter-repo", "prune"):
-        return sub
-    if sub == "restore" and "--staged" not in longs and "S" not in short.upper():
+    if sub in ("clean", "rm", "filter-branch", "filter-repo", "prune", "prune-packed", "repack", "gc", "maintenance"):
+        return sub                                  # irreversible object/work-tree removal (gc prunes unreachable objects)
+    if sub == "restore" and (has_long("worktree") or "W" in short_cs or not (has_long("staged", 3) or "S" in short_cs)):
         return "restore (discards work)"
-    if sub == "checkout" and ("--" in rest or "." in words or "f" in short or "--force" in longs or "--ours" in longs):
+    if sub == "checkout" and ("--" in rest or "." in words or "f" in short or has_long("force") or has_long("ours", 2)
+                              or has_long("theirs", 3)):
         return "checkout (discards work)"
-    if sub == "switch" and ("--discard-changes" in longs or "f" in short or "--force" in longs or "C" in "".join(
-            f[1:] for f in tokens[i + 1:] if f.startswith("-") and not f.startswith("--"))):
+    if sub == "switch" and (has_long("discard-changes") or has_long("force") or "f" in short or "C" in short_cs):
         return "switch force"
-    if sub == "push" and ({"--delete", "--prune", "--mirror"} & longs or "d" in short
-                          or any(w.startswith(":") for w in words)):
-        return "push delete"
+    if sub == "push" and (has_long("delete", 3) or has_long("prune") or has_long("mirror") or has_long("force")
+                          or "d" in short or "f" in short or any(w.startswith((":", "+")) for w in words)):
+        return "push delete/force"
     if sub == "worktree" and words[:1] and words[0] in ("remove", "prune"):
         return "worktree " + words[0]
-    if sub == "gc" and any(f.startswith("--prune") for f in flags):
-        return "gc --prune"
     if sub == "reflog" and words[:1] and words[0] in ("expire", "delete"):
         return "reflog " + words[0]
-    if sub == "update-ref" and ("d" in short or "--delete" in longs):
+    if sub == "update-ref" and ("d" in short or has_long("delete", 3)):
         return "update-ref -d"
     if sub == "submodule" and words[:1] and words[0] in ("deinit",):
         return "submodule deinit"

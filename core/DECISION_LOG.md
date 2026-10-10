@@ -146,3 +146,8 @@ Durable decisions and evidence only. Newest entries at the bottom. Full per-comm
 * **Evidence:** nine GPT rounds on the optional auto-trusted git mode; GPT-generated approval requests (AEVE script, ERP worktree add) blocked the operator's commander.
 * **Decision:** `launch_requires_approval=false`, `git_auto_trust=false` shipped defaults; deletion policy stays; global rule "no secondary blockers" added to ~/.claude/CLAUDE.md (snapshot in ~/.claude/backups/no-secondary-blockers-2026-10-10/) and to memory.
 * **Verification:** full suite 1484 passed, 4 skipped (agent-run, no CI).
+
+## 2026-10-10 — Final GPT round 10 -> destructive-git policy completed (round 11)
+* **Evidence:** GPT final verdict on a03958c: REQUEST_CHANGES, 1 BLOCKER reachable by default (destructive git forms not recognised: --har, --for, restore --worktree, gc). Detail: commit note "Round 11".
+* **Decision:** these ARE irreversible, so the unconditional gate was completed (abbreviations, restore/gc/repack/push-force/alias); read-boundary findings stay ROADMAP per the operator rule.
+* **Verification:** targeted tests 206 passed; full suite not re-run for this commit (operator order).
