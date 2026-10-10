@@ -15,8 +15,8 @@ personal-dc = "personal_dc.server:main"
 personal-dc-doctor = "personal_dc.doctor:main"
 
 [tool.setuptools.packages.find]
-include = ["personal_dc*"]
+include = ["personal_dc*", "dc_v2*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "tests_v2", "tests_phase02", "tests_phase03", "tests_winops"]
 addopts = "-q"

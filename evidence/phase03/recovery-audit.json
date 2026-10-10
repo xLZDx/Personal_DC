@@ -1,0 +1,23 @@
+{
+  "mode": "metadata-only/no extraction/no execution",
+  "source_root": "D:\\Temp\\Personal_DC_v2_2_isolated",
+  "transfers": [
+    {
+      "filename": "phase03-source.b64",
+      "present": true,
+      "size_bytes": 16005,
+      "file_sha256": "c57d777ca40bf95c55cd514e5e7f5f213751c303feea318d849b0478a9b7836a",
+      "error": "INVALID_BASE64",
+      "error_class": "Error"
+    },
+    {
+      "filename": "execution-transfer-v1.b64",
+      "present": true,
+      "size_bytes": 7000,
+      "file_sha256": "73931d24fc226ab9f603a7d8021abfeb694f3eff0906e5cfc96f756fcd024c72",
+      "decoded_size": 5250,
+      "decoded_sha256": "a9f44a4bb0ba143134c4936b929c240c0b83adb9eceb33c920c22364667c71c5",
+      "error": "INCOMPLETE_OR_TRAILING_COMPRESSED_DATA"
+    }
+  ]
+}

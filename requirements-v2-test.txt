@@ -1,0 +1,4 @@
+# No runtime dependencies are required for the foundation except standard Python.
+# Optional Ed25519 integration tests require cryptography; no auto-install in tests.
+pytest>=8,<10
+cryptography>=43,<47

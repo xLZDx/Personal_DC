@@ -1,0 +1,37 @@
+{
+  "status": "PASS",
+  "image_id": "sha256:0e5f906573693feaa1e21057ebdcfdb5bd5021f050b2dc7c9deceb629c7da2a8",
+  "checks": {
+    "node": {
+      "pass": true,
+      "exit_code": 0,
+      "output": "NODE_OK\n",
+      "diff_present": true
+    },
+    "npm-build": {
+      "pass": true,
+      "exit_code": 0,
+      "output": "\n> build\n> node build.js\n\nNPM_BUILD_OK\n",
+      "diff_present": true
+    },
+    "git-cli": {
+      "pass": true,
+      "exit_code": 0,
+      "output": "git version 2.39.5\n",
+      "diff_present": false
+    },
+    "no-inherited-secrets": {
+      "pass": true,
+      "exit_code": 0,
+      "output": "ENV_CLEAN\n",
+      "diff_present": false
+    },
+    "network-is-disabled": {
+      "pass": true,
+      "exit_code": 0,
+      "output": "NO_ROUTE\n",
+      "diff_present": false
+    }
+  },
+  "workspace": "D:\\Temp\\Personal_DC_v2_2_isolated\\phase03-node-cd68db9a7b40"
+}

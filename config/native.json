@@ -1,0 +1,9 @@
+{
+  "_comment": "Repo defaults for the native Windows operations layer. Operator overrides: %LOCALAPPDATA%\\Personal_DC_V2\\config\\native.json (never committed). Example service_allowlist entry: {\"name\": \"Apache2.4\", \"actions\": [\"start\", \"stop\", \"restart\"], \"approval_free\": []}",
+  "service_allowlist": [],
+  "service_denylist_extra": [],
+  "trusted_publishers": [],
+  "trusted_thumbprints": [],
+  "trusted_installer_sha256": [],
+  "odata_allowed_hosts": ["127.0.0.1", "localhost", "::1"]
+}

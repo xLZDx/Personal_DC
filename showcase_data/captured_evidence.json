@@ -1,0 +1,36 @@
+{
+  "schema": "personal-dc.showcase.v1",
+  "captured_at": "2026-10-09T07:20:32.876596+00:00",
+  "captured_from": "Local synthetic Docker smoke; no live execution in remote MCP",
+  "scenarios": {
+    "python": {
+      "pass": true,
+      "output": "PDC_SANDBOX_42"
+    },
+    "node": {
+      "pass": true,
+      "output": "NODE_OK"
+    },
+    "npm-build": {
+      "pass": true,
+      "output": "NPM_BUILD_OK"
+    },
+    "git": {
+      "pass": true,
+      "output": "git version 2.39.5"
+    },
+    "no-inherited-secrets": {
+      "pass": true,
+      "output": "ENV_CLEAN"
+    },
+    "network-is-disabled": {
+      "pass": true,
+      "output": "NO_ROUTE"
+    }
+  },
+  "recorded_checks": {
+    "python": "8/8 passed",
+    "node": "5/5 passed",
+    "mcp_local": "54 passed, 1 skipped"
+  }
+}

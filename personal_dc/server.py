@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import platform
 from pathlib import Path
 from typing import Any
@@ -58,7 +59,7 @@ def health() -> dict[str, Any]:
     return {
         "ok": True,
         "name": "Personal DC",
-        "version": __version__,
+        "version": os.environ.get("PERSONAL_DC_PRODUCT_VERSION", __version__),
         "platform": platform.platform(),
         "python": platform.python_version(),
         "deletion_tool_exposed": False,
@@ -80,14 +81,20 @@ def list_directory(path: str, limit: int = 250) -> list[dict[str, Any]]:
         raise NotADirectoryError(str(safe))
     result: list[dict[str, Any]] = []
     for child in sorted(safe.iterdir(), key=lambda p: (not p.is_dir(), p.name.casefold())):
-        if child.name.casefold() in policy.protected_components:
+        folded = child.name.casefold()
+        if folded in policy.protected_components or folded in policy.protected_names or folded.startswith(".env"):
             continue
+        try:
+            is_dir = child.is_dir()
+            size = child.stat().st_size if child.is_file() else None
+        except OSError:
+            continue  # dangling link / access error: skip the entry, keep listing the rest
         result.append(
             {
                 "name": child.name,
                 "path": str(child),
-                "type": "directory" if child.is_dir() else "file",
-                "size": child.stat().st_size if child.is_file() else None,
+                "type": "directory" if is_dir else "file",
+                "size": size,
             }
         )
         if len(result) >= max(1, min(int(limit), 1000)):
@@ -224,9 +231,17 @@ def git_commit(project: str, message: str) -> dict[str, Any]:
 @mcp.tool(annotations=OPEN_WORLD_WRITE)
 def git_push(project: str, remote: str = "origin", branch: str = "HEAD") -> dict[str, Any]:
     """Perform a normal git push. This tool does not expose force options."""
-    if remote.startswith("-") or branch.startswith("-"):
+    cwd = project_path(project)
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,60}", remote) or (branch != "HEAD" and not re.fullmatch(r"[A-Za-z0-9._/-]{1,120}", branch)):
         raise ValueError("Invalid remote or branch.")
-    return run("git", ["push", remote, branch], project_path(project), 300)
+    if branch.startswith("-") or branch.startswith("/") or ".." in branch:
+        raise ValueError("Invalid remote or branch.")
+    # Only a remote NAME configured in the repository is accepted (never a URL or path), and the
+    # push is always a plain `<remote> <branch>`: no refspec deletes (`:x`) and no force (`+x`).
+    names = run("git", ["remote"], cwd, 30).get("stdout", "").split()
+    if remote not in names:
+        raise ValueError("Remote is not configured in this project.")
+    return run("git", ["push", remote, branch], cwd, 300)
 
 
 @mcp.tool(annotations=LOCAL_WRITE)

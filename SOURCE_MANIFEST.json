@@ -1,0 +1,10 @@
+{
+  "dc_v2/__init__.py": {"sha256": "d9652311a377e019a6f7c3267c94aff250222996c4363db33b7bdb274bdb8dce", "git_blob": "df03ecd78f92512fc12bb9834f0fe9ec2f6e003e", "bytes": 133},
+  "dc_v2/contracts.py": {"sha256": "981f0231c9500c99eb5a9b6def7d72d6cbc14c213e64ed1240db1b73d5599ca9", "git_blob": "842373f9a9736f5388ee2f0a893385f351f605c9", "bytes": 5452},
+  "dc_v2/gateway.py": {"sha256": "7dd8408d6fa0c15222893f46fe0501d3653679260d0ea2f9f816d697ed1b7b23", "git_blob": "235023cbdc7b2aef27e3f9ae007a1bd5a228ed96", "bytes": 5278},
+  "dc_v2/ledger.py": {"sha256": "385db179ee788c4a731674e0defdeaa87d9f8e289acd23a9faee8380c05f97f8", "git_blob": "f3a13970827b445b5d754ffaac7233bdba24aad0", "bytes": 10648},
+  "dc_v2/output.py": {"sha256": "2ac6a0b7f4610291bbf981f3490861d1e01428d3806f27744060266cb501a179", "git_blob": "0acdaae2ff33736d9324307ef86ea56f095633e0", "bytes": 3022},
+  "dc_v2/policy.py": {"sha256": "5545870f7c69e9dd06803c0436e3f4a688b0d5909b44e66f1ef3c71fd7e7ca5c", "git_blob": "684cc72f11f24d3bb646f39ba6ee2a8761a89e47", "bytes": 7953},
+  "tests_v2/__init__.py": {"sha256": "7b4b14dce8b044d354c3b8adf1a3cfc972a2220407c8b9ac9fe3045691ff8ad9", "git_blob": "11e4ce4e2307b5c20d22834d6c9e9ce048f0560f", "bytes": 80},
+  "tests_v2/test_security.py": {"sha256": "6f81f47612752efadee7c086d65bfe53dc7dab2402d5e148bd832ddd06b878ea", "git_blob": "70a84a35b2ec25a6dd8166c0a0791040f80d6c19", "bytes": 17088}
+}

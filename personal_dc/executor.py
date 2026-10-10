@@ -12,6 +12,16 @@ from .policy import Policy
 MAX_CAPTURE = 40000
 
 
+_SECRET_ENV_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
+
+
+def _child_env() -> dict[str, str]:
+    """Environment for policy-run children: no gateway/tunnel/API secrets are inherited."""
+    return {k: v for k, v in os.environ.items()
+            if not k.upper().startswith(("PDC_", "CONTROL_PLANE_", "OPENAI_"))
+            and not any(m in k.upper() for m in _SECRET_ENV_MARKERS)}
+
+
 def run(executable: str, args: list[str], cwd: str | Path, timeout: int = 120) -> dict[str, Any]:
     policy = Policy()
     safe_cwd = policy.resolve_path(cwd)
@@ -25,6 +35,7 @@ def run(executable: str, args: list[str], cwd: str | Path, timeout: int = 120) -
         proc = subprocess.run(
             [exe, *safe_args],
             cwd=str(safe_cwd),
+            env=_child_env(),
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,

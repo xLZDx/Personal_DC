@@ -1,0 +1,47 @@
+{
+  "created_tasks": [
+    "task-7ad2785c5e3a02a605b0eb96",
+    "task-4cb58b8eefcb0641c8f6ee0d",
+    "task-6a43be3ade371eb539a7df48",
+    "task-8916daffc2fa316d428bac4d"
+  ],
+  "date": "2026-10-08",
+  "image_id": "sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de",
+  "staging": "D:\\Temp\\Personal_DC_v2_2_isolated\\phase03-live-46169e0ed115",
+  "status": "PASS",
+  "synthetic_fixture": true,
+  "tests": {
+    "actual-container-hostconfig": {
+      "detail": "{'profile': 'phase03-disposable-linux', 'certified': False}",
+      "pass": true
+    },
+    "cancel-long-process": {
+      "detail": "{'task_id': 'task-6a43be3ade371eb539a7df48', 'status': 'EXITED', 'exit_code': 143}",
+      "pass": true
+    },
+    "emergency-latch": {
+      "detail": "{'stop_latched': True, 'tasks': {'task-7ad2785c5e3a02a605b0eb96': 'STOP_REQUESTED', 'task-4cb58b8eefcb0641c8f6ee0d': 'STOP_REQUESTED', 'task-6a43be3ade371eb539a7df48': 'STOP_REQUESTED', 'task-8916daffc2fa316d428bac4d': 'STOP_REQUESTED'}}",
+      "pass": true
+    },
+    "engine": {
+      "detail": "pinned local image",
+      "pass": true
+    },
+    "guest-enforced-deadline": {
+      "detail": "{'task_id': 'task-8916daffc2fa316d428bac4d', 'status': 'EXITED', 'exit_code': 124}",
+      "pass": true
+    },
+    "guest-write-and-diff": {
+      "detail": "{'exit_code': 0, 'changed': True, 'output': 'WROTE\\n'}",
+      "pass": true
+    },
+    "python-cli": {
+      "detail": "{'exit_code': 0, 'output': 'PDC_SANDBOX_42\\n'}",
+      "pass": true
+    },
+    "stop-denies-restart": {
+      "detail": "OPERATION_CANCELLED",
+      "pass": true
+    }
+  }
+}

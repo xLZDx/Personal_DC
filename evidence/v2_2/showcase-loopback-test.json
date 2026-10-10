@@ -1,0 +1,21 @@
+{
+  "schema": "pdc-v2-showcase-test.v1",
+  "checked_utc": "2026-10-09T07:26:50.748009+00:00",
+  "candidate": "synthetic-only",
+  "checks": {
+    "unauthenticated_denied": true,
+    "invalid_key_denied": true,
+    "untrusted_origin_denied": true,
+    "mcp_initialized": true,
+    "exact_read_only_catalog": true,
+    "synthetic_only": true,
+    "captured_python": true,
+    "captured_node": true,
+    "captured_npm-build": true,
+    "captured_git": true,
+    "unknown_profile_denied": true,
+    "approval_not_granted": true
+  },
+  "status": "PASS",
+  "server_stopped": true
+}
