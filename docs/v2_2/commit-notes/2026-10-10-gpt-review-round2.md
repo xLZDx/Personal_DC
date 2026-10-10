@@ -133,3 +133,10 @@ Known limitation: a user-defined alias stored in a git config file cannot be res
 `command_execute` and `process_start` with the shipped defaults, 17 ordinary forms not flagged, a repository whose uncommitted edit survives the four
 reported forms. Verification: targeted run `test_review_round2.py` + `test_deletion_policy.py` = 206 passed; the full suite was NOT re-run for this
 commit (operator said to skip it); last full run before this change: 1484 passed, 4 skipped.
+
+## Round 12: operator narrowed the destructive-git scope
+
+The operator chose the narrower scope: only deletion of files, branches, tags, remotes, stashes and loss of uncommitted work stay refused
+(`branch/tag -d`, `remote remove`, `stash drop/clear`, `reset --hard`, `checkout --force|-- path`, `switch --discard-changes`, `clean`, `rm`, `filter-branch`,
+`push --delete|:ref|--prune|--mirror`, `worktree remove|prune`, `reflog expire|delete`, `update-ref -d`, `submodule deinit`, `-c alias.*`). `restore`, `gc`/`repack`/`prune`/`maintenance`
+and force pushes are allowed again. Abbreviation handling (`--har`, `--for`) is kept. Tests adjusted: 207 passed (targeted); full suite not re-run (operator order).

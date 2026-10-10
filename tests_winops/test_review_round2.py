@@ -371,13 +371,14 @@ def test_operator_switch_waives_launch_approvals_but_never_the_deletion_policy(w
 
 DESTRUCTIVE_GIT = [
     ["reset", "--har", "HEAD"], ["reset", "--hard", "HEAD"], ["reset", "--mer"], ["checkout", "--for", "HEAD"],
-    ["checkout", "--force", "HEAD"], ["checkout", "--", "a.txt"], ["restore", "--staged", "--worktree", "a.txt"],
-    ["restore", "a.txt"], ["restore", "-W", "a.txt"], ["restore", "--worktree", "a.txt"], ["gc"], ["gc", "--prune=now"],
-    ["repack", "-ad"], ["maintenance", "run"], ["push", "--force"], ["push", "-f", "origin", "x"], ["push", "origin", "+main"],
-    ["push", "--force-with-lease"], ["branch", "--del", "x"], ["switch", "--discard-changes", "m"],
+    ["checkout", "--force", "HEAD"], ["checkout", "--", "a.txt"],
+    ["clean", "-fd"], ["rm", "a.txt"], ["push", "origin", "--delete", "x"], ["push", "origin", ":x"],
+    ["branch", "--del", "x"], ["switch", "--discard-changes", "m"],
     ["-c", "alias.x=reset --hard", "x"],
 ]
-SAFE_GIT = [["status"], ["log", "-n", "3"], ["diff"], ["add", "-A"], ["commit", "-m", "x"], ["restore", "--staged", "a.txt"],
+SAFE_GIT = [["restore", "a.txt"], ["restore", "--worktree", "a.txt"], ["gc"], ["gc", "--prune=now"], ["repack", "-ad"],
+            ["maintenance", "run"], ["prune"], ["push", "--force"], ["push", "-f", "origin", "x"], ["push", "origin", "+main"],
+            ["push", "--force-with-lease"], ["status"], ["log", "-n", "3"], ["diff"], ["add", "-A"], ["commit", "-m", "x"], ["restore", "--staged", "a.txt"],
             ["restore", "--sta", "a.txt"], ["push", "origin", "main"], ["branch", "new"], ["checkout", "-b", "feature"],
             ["switch", "main"], ["merge", "x"], ["rebase", "main"], ["pull"], ["tag", "v1"], ["stash"],
             ["worktree", "add", "-b", "x", "../p", "abc"]]
@@ -397,12 +398,12 @@ def test_ordinary_git_is_not_flagged_as_destructive(args):
     assert deletion_policy.git_deletes(args) is None
 
 
-def test_the_four_reported_forms_never_touch_the_repository(work, native_overlay):
+def test_the_forms_that_would_lose_uncommitted_work_never_touch_the_repository(work, native_overlay):
     native_overlay(launch_requires_approval=False, git_auto_trust=False)
     _repo_with_commit(work / "w4")
     target = work / "w4" / "secrets.txt"
     target.write_text("EDITED-UNCOMMITTED\n", encoding="utf-8")
-    for args in (["reset", "--har", "HEAD"], ["checkout", "--for", "HEAD"], ["restore", "--staged", "--worktree", "secrets.txt"], ["gc"]):
+    for args in (["reset", "--har", "HEAD"], ["checkout", "--for", "HEAD"], ["clean", "-fd"], ["switch", "--discard-changes", "x"]):
         with pytest.raises(PolicyError, match="DELETION_NOT_ALLOWED"):
             ct.command_execute("", shell="exec", argv=["git.exe", *args], cwd=str(work / "w4"), mode="workspace_write")
     assert target.read_text(encoding="utf-8") == "EDITED-UNCOMMITTED\n"             # the uncommitted edit survived
@@ -421,7 +422,7 @@ def test_unreadable_git_config_means_not_free(tmp_path, monkeypatch):
     "git branch -fd x", "git remote remove origin", "git remote rm origin", "git remote prune origin",
     "git reset --hard", "git reset --hard HEAD~1", "git clean -fd", "git rm a.txt", "git tag -d v1",
     "git tag --delete v1", "git stash drop", "git stash clear", "git push origin --delete x", "git push origin :x",
-    "git push --prune", "git checkout -- .", "git restore a.txt", "git worktree remove x", "git gc --prune=now",
+    "git push --prune", "git checkout -- .", "git worktree remove x",
     "git reflog expire --all", "git update-ref -d refs/heads/x", "git -C repo branch --delete x",
     "git.exe branch --delete x", "git submodule deinit x",
 ])

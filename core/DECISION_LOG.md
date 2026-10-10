@@ -151,3 +151,7 @@ Durable decisions and evidence only. Newest entries at the bottom. Full per-comm
 * **Evidence:** GPT final verdict on a03958c: REQUEST_CHANGES, 1 BLOCKER reachable by default (destructive git forms not recognised: --har, --for, restore --worktree, gc). Detail: commit note "Round 11".
 * **Decision:** these ARE irreversible, so the unconditional gate was completed (abbreviations, restore/gc/repack/push-force/alias); read-boundary findings stay ROADMAP per the operator rule.
 * **Verification:** targeted tests 206 passed; full suite not re-run for this commit (operator order).
+
+## 2026-10-10 — Destructive-git scope narrowed by the operator (round 12)
+* **Evidence:** operator asked what exactly was forbidden and chose option 2: block only deletion of files/branches/tags and loss of uncommitted work.
+* **Decision:** `restore`, `gc/repack/prune/maintenance` and force pushes allowed again; everything else from round 11 stays. Targeted tests 207 passed; full suite not re-run (operator order).

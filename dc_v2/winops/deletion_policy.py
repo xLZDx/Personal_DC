@@ -46,8 +46,10 @@ def _abbrev(flag: str, full: str, minimum: int = 2) -> bool:
 def git_deletes(args: list[str]) -> str | None:
     """Structured check of one git argument vector (``args`` exclude ``git``); returns the offending form or None.
 
-    Covers destructive ref/work-tree/history/object operations including long-option abbreviations (``--har``,
-    ``--for``), combined short flags, restore of the work tree, destructive housekeeping and force pushes.
+    Operator scope (2026-10-10): deletion of files, branches, tags, remotes and stashes, and loss of uncommitted work
+    (``reset --hard``, ``checkout --force``/``-- path``, ``switch --discard-changes``, ``clean``, ``rm``). ``restore``,
+    ``gc``/``repack``/``prune`` and force pushes are allowed. Long-option abbreviations (``--har``, ``--for``) and
+    combined short flags are recognised.
     """
     tokens = [str(a).strip("\"'") for a in args]
     # skip leading global options (-C <dir>, -c k=v, --no-pager, ...): the subcommand is the first bare word
@@ -85,18 +87,16 @@ def git_deletes(args: list[str]) -> str | None:
         return "stash " + words[0]
     if sub == "reset" and (has_long("hard") or has_long("merge") or has_long("keep")):
         return "reset --hard"
-    if sub in ("clean", "rm", "filter-branch", "filter-repo", "prune", "prune-packed", "repack", "gc", "maintenance"):
-        return sub                                  # irreversible object/work-tree removal (gc prunes unreachable objects)
-    if sub == "restore" and (has_long("worktree") or "W" in short_cs or not (has_long("staged", 3) or "S" in short_cs)):
-        return "restore (discards work)"
+    if sub in ("clean", "rm", "filter-branch", "filter-repo"):
+        return sub                                  # deletes files / rewrites history
     if sub == "checkout" and ("--" in rest or "." in words or "f" in short or has_long("force") or has_long("ours", 2)
                               or has_long("theirs", 3)):
         return "checkout (discards work)"
     if sub == "switch" and (has_long("discard-changes") or has_long("force") or "f" in short or "C" in short_cs):
         return "switch force"
-    if sub == "push" and (has_long("delete", 3) or has_long("prune") or has_long("mirror") or has_long("force")
-                          or "d" in short or "f" in short or any(w.startswith((":", "+")) for w in words)):
-        return "push delete/force"
+    if sub == "push" and (has_long("delete", 3) or has_long("prune") or has_long("mirror") or "d" in short
+                          or any(w.startswith(":") for w in words)):
+        return "push delete"                        # deleting remote refs; a plain force push is allowed (operator, 2026-10-10)
     if sub == "worktree" and words[:1] and words[0] in ("remove", "prune"):
         return "worktree " + words[0]
     if sub == "reflog" and words[:1] and words[0] in ("expire", "delete"):
