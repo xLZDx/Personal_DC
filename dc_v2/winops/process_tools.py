@@ -276,10 +276,8 @@ def guard_git_args(args: list[str], cwd: Path | None = None) -> tuple[list[str],
         elif a.startswith("-") and len(a) > 1 and (a[1] in "oO" or "o" in a[1:2]):
             raise PolicyError("GIT_OUTPUT_OR_NOINDEX_OPTION_NOT_ALLOWED")
     sub = lowered[0]
-    if sub == "push" and any(a in ("-f", "--force", "--delete", "-d", "--mirror", "--prune") or a.startswith("--force")
-                             or a.startswith("+") or a.startswith(":") or (a.startswith("-") and not a.startswith("--") and "f" in a)
-                             for a in lowered[1:]):
-        raise PolicyError("GIT_FORCE_OR_DELETE_PUSH_NOT_ALLOWED")
+    if sub == "push" and any(a in ("--delete", "-d", "--mirror", "--prune") or a.startswith(":") for a in lowered[1:]):
+        raise PolicyError("GIT_DELETE_PUSH_NOT_ALLOWED")           # force pushes are allowed (operator, 2026-10-10)
     if sub in ("config", "credential", "filter-branch", "daemon", "http-backend"):
         raise PolicyError("GIT_SUBCOMMAND_NOT_ALLOWED")
     cfg = native_config()

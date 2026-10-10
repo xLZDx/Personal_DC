@@ -155,3 +155,7 @@ Durable decisions and evidence only. Newest entries at the bottom. Full per-comm
 ## 2026-10-10 — Destructive-git scope narrowed by the operator (round 12)
 * **Evidence:** operator asked what exactly was forbidden and chose option 2: block only deletion of files/branches/tags and loss of uncommitted work.
 * **Decision:** `restore`, `gc/repack/prune/maintenance` and force pushes allowed again; everything else from round 11 stays. Targeted tests 207 passed; full suite not re-run (operator order).
+
+## 2026-10-10 — Force push allowed in guard_git_args too (round 12b)
+* **Evidence:** live probe after the restart: `git push --force` -> GIT_FORCE_OR_DELETE_PUSH_NOT_ALLOWED although the operator allowed force push.
+* **Decision:** the older rule now blocks only delete/mirror/prune/:ref pushes. Targeted tests 428 passed; full suite not re-run (operator order).

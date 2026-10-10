@@ -405,10 +405,8 @@ def test_env_does_not_inherit_secrets(monkeypatch):
 
 # ----------------------------------------------------------------------- git
 @pytest.mark.parametrize("args", [
-    ["push", "--force", "origin", "x"], ["push", "-f", "origin", "x"], ["push", "origin", "+main"],
-    ["push", "--force-with-lease", "origin", "x"], ["push", "origin", ":main"], ["push", "--delete", "origin", "x"],
+    ["push", "origin", ":main"], ["push", "--delete", "origin", "x"],
     ["push", "-d", "origin", "x"], ["push", "--mirror", "origin"], ["push", "--prune", "origin"],
-    ["push", "-uf", "origin", "x"], ["push", "--force-if-includes", "origin", "x"],
     ["-c", "core.sshCommand=calc", "fetch"], ["--version"], ["-C", "x", "status"],
     ["fetch", "--upload-pack=calc"], ["fetch", "--upload-pack", "calc"], ["clone", "--receive-pack=x", "u"],
     ["diff", "--ext-diff"], ["log", "--textconv"], ["status", "--git-dir=x"], ["status", "--work-tree=x"],
@@ -418,6 +416,13 @@ def test_env_does_not_inherit_secrets(monkeypatch):
 def test_git_program_forcing_and_force_push_blocked(args):
     with pytest.raises(PolicyError):
         pt.guard_git_args(args)
+
+
+@pytest.mark.parametrize("args", [["push", "--force", "origin", "x"], ["push", "-f", "origin", "x"], ["push", "origin", "+main"],
+                                  ["push", "--force-with-lease", "origin", "x"], ["push", "-uf", "origin", "x"]])
+def test_force_push_is_allowed_by_operator_decision(args):
+    hardened, trusted = pt.guard_git_args(args)                    # does not raise; it still needs approval when approvals are on
+    assert trusted is False and hardened[-len(args):] == args
 
 
 @pytest.fixture()

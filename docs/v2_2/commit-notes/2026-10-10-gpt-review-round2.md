@@ -140,3 +140,9 @@ The operator chose the narrower scope: only deletion of files, branches, tags, r
 (`branch/tag -d`, `remote remove`, `stash drop/clear`, `reset --hard`, `checkout --force|-- path`, `switch --discard-changes`, `clean`, `rm`, `filter-branch`,
 `push --delete|:ref|--prune|--mirror`, `worktree remove|prune`, `reflog expire|delete`, `update-ref -d`, `submodule deinit`, `-c alias.*`). `restore`, `gc`/`repack`/`prune`/`maintenance`
 and force pushes are allowed again. Abbreviation handling (`--har`, `--for`) is kept. Tests adjusted: 207 passed (targeted); full suite not re-run (operator order).
+
+## Round 12b: force push really allowed
+
+The live check after the narrowing showed `git push --force` still refused by an older rule in `process_tools.guard_git_args`
+(`GIT_FORCE_OR_DELETE_PUSH_NOT_ALLOWED`). That rule now blocks only delete/mirror/prune/`:ref` pushes (`GIT_DELETE_PUSH_NOT_ALLOWED`);
+force, `+ref`, `--force-with-lease`, `-uf` pass. Tests updated (428 passed, targeted); full suite not re-run.
