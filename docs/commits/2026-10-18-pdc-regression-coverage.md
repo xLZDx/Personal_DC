@@ -90,8 +90,9 @@ evidence; no model/effort value is inferred here.
   `F0B463B94C6D567AAFE1FC306D2149469C4DA3EC20CC76FC5A4C84DA883D4AE7`.
 - `scripts/install-autostart.ps1` SHA-256:
   `140CDAB55451787A4B3DBC64804A7F228D0C9A3C3E3FD81381D6B52173DFB697`.
-- `tests/AutostartRecovery.Tests.ps1` SHA-256 after the two new cases:
-  `4B63E2A2BD1218AFECE3BB056787FEE18A6F94527557F114EF90B59B6F53FE79`.
+- `tests/AutostartRecovery.Tests.ps1` SHA-256 after the two new cases and the follow-up comment
+  correction:
+  `F98D1FDFC1CCCECDEB7330D641E681F2DF987239F1DABD5AC6017A15D56A5326`.
 - `tests/AutostartMutex.Tests.ps1` SHA-256:
   `0915301E840D58E0BD59519B36CC0AD34E4554D0AB640DE8C3038AC6B3BF06E3`.
 - Disposable supervisor copy SHA-256:
@@ -104,6 +105,11 @@ evidence; no model/effort value is inferred here.
   `E08E6BDF3F3BF3451CD9FF72581AF22F21D9381EEE944CAF66EB3CEB234BC5C7`.
 - Sentinel SHA-256:
   `1E555D951B97FB5B45DC1512DA2824504CEB8E988D7523D1CE4874D4F4E832BF`.
+
+After the initial 16-case run, review corrected the helper-extraction comment to include the
+`Write-Event` logging helper accurately. The same suite was rerun on the final test-file hash above:
+16 passed, 0 failed, 0 skipped in 12.18 seconds. The comment-only correction and its change record
+are detailed in [`2026-10-18-pdc-test-comment-correction.md`](2026-10-18-pdc-test-comment-correction.md).
 
 ## Remaining limits and ownership
 

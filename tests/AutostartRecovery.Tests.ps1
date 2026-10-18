@@ -12,7 +12,7 @@ if ($parseErrors.Count -gt 0) {
     throw "Supervisor source did not parse: $($parseErrors[0].Message)"
 }
 
-# Load only pure probe/redaction helpers. Never execute the supervisor's startup loop.
+# Load helper functions for isolated probes and fixture logging. Never execute the supervisor's startup loop.
 $helperNames = @('Write-Event', 'Redact-Message', 'Test-PortFree', 'Test-McpHealth', 'Test-TunnelReady')
 foreach ($functionAst in $ast.FindAll({
     param($node)
