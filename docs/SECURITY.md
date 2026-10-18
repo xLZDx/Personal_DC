@@ -46,7 +46,7 @@ The plaintext key is not written to Git, logs, or a plaintext `.env` file. It is
 
 ## Autostart
 
-The supported scheduled task `Personal_DC_V2_Tunnel` starts at the current user's logon with limited privileges. It runs the repository supervisor, which validates the MCP backend and existing tunnel profile, prevents duplicate instances, and retries transient failures with a capped delay. Task Scheduler restarts a failed supervisor five times at one-minute intervals. The legacy task `Personal_DC_Tunnel` is disabled and is not modified by the v2 installer.
+The supported scheduled task `Personal_DC_V2_Tunnel` starts at the current user's logon with limited privileges. It runs the repository supervisor, which validates the MCP backend and existing tunnel profile, prevents duplicate instances, and retries transient child-service failures with a capped delay. The installer also registers a daily one-minute repeating trigger with `IgnoreNew` and `StopAtDurationEnd=false` (the XML default); an isolated natural-failure E2E confirmed recovery within 61 seconds without overlap. The configured five Task Scheduler `RestartOnFailure` attempts did not occur in a separate 138-second observation. See [AUTOSTART_RECOVERY.md](AUTOSTART_RECOVERY.md) for evidence and the unobserved 24-hour rollover. The legacy task `Personal_DC_Tunnel` is disabled and is not modified by the v2 installer.
 
 ## Network boundary
 

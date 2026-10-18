@@ -7,7 +7,20 @@ $UserId = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 
 $ActionArgs = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $StartScript + '"'
 $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $ActionArgs -WorkingDirectory $Repo
-$Trigger = New-ScheduledTaskTrigger -AtLogOn -User $UserId
+$LogonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $UserId
+$DailyStart = (Get-Date).AddMinutes(1)
+$DailyTrigger = New-ScheduledTaskTrigger -Daily -At $DailyStart -DaysInterval 1
+$DailyRepetition = New-CimInstance `
+    -Namespace "Root/Microsoft/Windows/TaskScheduler" `
+    -ClassName MSFT_TaskRepetitionPattern `
+    -ClientOnly `
+    -Property @{
+        Interval = "PT1M"
+        Duration = "P1D"
+        StopAtDurationEnd = $false
+    }
+$DailyTrigger.Repetition = $DailyRepetition
+$Triggers = @($LogonTrigger, $DailyTrigger)
 $Principal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Limited
 $Settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
@@ -21,7 +34,7 @@ $Settings = New-ScheduledTaskSettingsSet `
 Register-ScheduledTask `
     -TaskName $TaskName `
     -Action $Action `
-    -Trigger $Trigger `
+    -Trigger $Triggers `
     -Principal $Principal `
     -Settings $Settings `
     -Description "Supervise Personal DC v2.2 and its existing OpenAI Secure MCP Tunnel profile at Windows logon." `
