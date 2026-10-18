@@ -11,14 +11,24 @@ The PowerShell supervisor owns normal backend and tunnel recovery. It holds a pe
 checks the Streamable HTTP `initialize` and `health` tool exchange on `127.0.0.1:18765/mcp`, checks
 the tunnel client's `/healthz` and `/readyz` endpoints on `127.0.0.1:18080`, and restarts only the
 two processes it launched. Retry delay grows exponentially and is capped at five minutes. The
-task is configured for five Task Scheduler recovery attempts at one-minute intervals, but controlled
-isolated failures did not produce a retry. The installer also registers a daily trigger that repeats
-every minute for one day; with `MultipleInstances=IgnoreNew`, it provides a bounded fallback when
-the supervisor exits. The repetition uses `StopAtDurationEnd=false` (the Task Scheduler XML omits
-this optional default-false element), so ending a repetition window does not terminate the running
-supervisor. In-process recovery of backend/tunnel failures passed its isolated scenarios. The
-daily fallback's next-minute restart passed in an isolated task; a full 24-hour rollover has not
-been observed. See [Microsoft's repetition pattern documentation](https://learn.microsoft.com/en-us/windows/win32/taskschd/taskschedulerschema-stopatdurationend-repetitiontype-element).
+previous task registration configured five Task Scheduler recovery attempts at one-minute intervals,
+but controlled isolated failures did not produce a retry. The installer splits recovery between two tasks:
+the long-running supervisor has no triggers and keeps `MultipleInstances=IgnoreNew`; the short-lived
+recovery task has both a user logon trigger and a daily trigger repeating every minute for one day.
+It starts the supervisor only when Task Scheduler reports it `Ready`. The recovery task uses
+`MultipleInstances=Parallel` so simultaneous logon and minute triggers do not get refused by
+Task Scheduler; a SID-scoped mutex in the Global namespace serializes competing recovery actions
+before they inspect or start the supervisor. Cross-session runtime was unavailable and remains
+`NOT_RUN`. This avoids repeatedly triggering the still-running
+supervisor, which produced `0x800710E0` under `IgnoreNew`, and avoids relying on the supervisor's
+session-scoped mutex for cross-session serialization. The recovery action is bounded to 30 seconds
+and exits immediately when the supervisor is already running. The repetition uses
+`StopAtDurationEnd=false` (the Task Scheduler XML omits this optional default-false element), so the
+window boundary does not terminate a running task. In-process recovery of backend/tunnel failures
+passed its isolated scenarios. The daily fallback's next-minute restart passed in an isolated task;
+a full 24-hour rollover has not been observed. See [Microsoft's repetition pattern documentation](https://learn.microsoft.com/en-us/windows/win32/taskschd/taskschedulerschema-stopatdurationend-repetitiontype-element).
+This scheduler-state watchdog recovers an exited task; it does not detect a supervisor that remains
+`Running` while hung. Child-service and health failures remain the supervisor's responsibility.
 
 Structured, secret-safe startup events are appended to `logs/autostart.log`. Backend and tunnel
 standard output/error remain in their dedicated log files. The DPAPI key remains in the existing
@@ -35,12 +45,25 @@ Set-Location D:\Repo\Personal_DC
 .\scripts\status-autostart.ps1
 ```
 
-The installer configures the current user, a logon trigger, a daily trigger repeating every minute
-for one day, five bounded scheduler recovery attempts, and the repository's absolute start-script
-path. `IgnoreNew` prevents a repeated trigger from starting a second supervisor while one is still
-running. The disposable daily-trigger E2E confirmed restart after a synthetic exit within 61 seconds;
-its exact limits are recorded below. The installer does not create a tunnel, replace the profile,
-or regenerate credentials.
+The installer configures two current-user tasks. `Personal_DC_V2_Tunnel` has no triggers,
+`IgnoreNew`, and the repository's absolute start-script path. `Personal_DC_V2_Tunnel_Recovery` has a
+logon trigger and a daily trigger repeating every minute for one day; its action uses a global
+mutex and starts the supervisor only when its registered task state is `Ready`. The watchdog does
+not stop a running supervisor. Isolated scheduler scenarios confirmed repeated no-op ticks, natural
+exit recovery in 54.007 seconds, preservation of the active PID during task re-registration, and
+serialization of overlapping recovery actions with one acquired and one denied mutex attempt. The
+combined fixture's overlap assertion sampled the supervisor before releasing its own test barrier;
+the scenario was rerun separately with corrected synchronization and passed. No `0x800710E0` was
+observed in the passing candidate scenarios. The design is installed on the live user task. A fresh
+backup of the previous main task definition is
+`%LOCALAPPDATA%\Personal_DC\backups\Personal_DC_V2_Tunnel-20261018-161323.xml` (3,992 bytes).
+After installation the original supervisor PID 7724 remained running, both recovery minute ticks
+completed with result 0, and Personal DC Showcase health returned `ok`. The main task's displayed
+`LastTaskResult` still contains its pre-install historical `0x800710E0`; because its triggers are
+now absent, that value is not a new post-install attempt. The recovery task result is 0. Cross-session
+mutex use and the full 24-hour repetition rollover remain `NOT_RUN`; the separate historical
+`RestartOnFailure` behavior remains unexplained and is not relied upon. The installer does not
+create a tunnel, replace the profile, or regenerate credentials.
 
 ## Roll back a task registration
 
@@ -55,6 +78,11 @@ Export-ScheduledTask -TaskName Personal_DC_V2_Tunnel | Set-Content -LiteralPath 
 Get-Item -LiteralPath $backup | Select-Object FullName,Length
 ```
 
+If `Personal_DC_V2_Tunnel_Recovery` already exists, export its XML to a separate timestamped file
+in the same directory before replacing it. The installer registers the recovery task before
+updating the supervisor task, so the existing supervisor can remain running while the new
+registration is applied.
+
 Confirm the file exists and is non-empty before changing the task. To restore that saved
 registration:
 
@@ -64,8 +92,11 @@ $xml = Get-Content -LiteralPath $backup -Raw
 Register-ScheduledTask -TaskName Personal_DC_V2_Tunnel -Xml $xml -Force
 ```
 
-This restores the task definition, not the service runtime state. Start/stop the task separately
-after inspecting the restored action and principal.
+This restores the selected task definition, not the service runtime state. If rolling back to a
+backup from before the recovery task existed, remove `Personal_DC_V2_Tunnel_Recovery` after restoring
+the old supervisor definition. Start/stop the supervisor separately only after inspecting its
+restored action and principal; do not terminate the existing production process as part of the
+definition rollback.
 
 ## Roll back the tunnel profile
 
