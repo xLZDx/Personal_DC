@@ -33,9 +33,12 @@ This scheduler-state watchdog recovers an exited task; it does not detect a supe
 Structured, secret-safe startup events are appended to a UTC-dated `logs/autostart-YYYYMMDD.log`.
 Backend and tunnel standard output/error use the same UTC-day naming convention. Recovery events
 and expiration cleanup share a SID-scoped mutex. Files whose last write is more than seven days old
-are removed, including legacy base-name log files. At the UTC day boundary the supervisor stops
-only its owned backend and tunnel processes, closes their redirected handles, and starts them with
-the new day's files. This introduces a brief daily restart. The policy limits retention age, not
+are removed, including legacy base-name log files. Event logs are swept on each event write and
+inactive child logs about once a minute; active child-log files are skipped until their handles
+close. A failed per-file deletion is recorded as a warning and retried on the next sweep without
+stopping healthy children. At the UTC day boundary the supervisor stops only its owned backend and
+tunnel processes, closes their redirected handles, and starts them with the new day's files. This
+introduces a brief daily restart. The policy limits retention age, not
 the total bytes written during the week. See [`LOG_RETENTION_DESIGN.md`](LOG_RETENTION_DESIGN.md)
 for implementation and verification details.
 

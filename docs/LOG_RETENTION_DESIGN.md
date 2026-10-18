@@ -52,11 +52,16 @@ scope.
   tunnel processes at the UTC day boundary, which closes their redirect handles before starting
   them against the new day's files. This creates a brief daily service restart.
 - Expire all five Personal DC streams, including legacy base-name files, when their last write is
-  older than seven days. Event appends and expiration cleanup use the SID-scoped logging mutex;
-  child streams are expired only after the supervisor has closed its owned child handles.
-- If the logging lock, write, or rotation fails, do not silently discard the error. Surface it on
-  the supervisor/recovery exit path so Task Scheduler state/result remains observable. Do not
-  retry indefinitely when disk or filesystem errors persist.
+  older than seven days. Event appends and expiration cleanup use the SID-scoped logging mutex.
+  Event logs are swept on event writes; inactive child logs are swept about once a minute by the
+  supervisor, while its four active child-log filenames are excluded. On startup and after child
+  processes stop, the supervisor can sweep all child streams because their handles are closed.
+- A per-file expiration failure is returned as a diagnostic and logged as
+  `log_expiration_cleanup_incomplete`; other eligible files are still processed and the next sweep
+  retries the failure. A transient file lock must not stop healthy backend/tunnel children.
+- If the logging mutex or event append fails, do not silently discard the error; surface it through
+  the supervisor/recovery failure path. A per-file expiration failure is instead recorded as a
+  warning and retried on the next minute sweep, without a tight retry loop.
 - Existing base-name log files are matched by cleanup and remain until their last-write age exceeds
   seven days. No extra copy is created during rollout.
 
@@ -67,6 +72,8 @@ scope.
 | Two processes append to the current dated event log concurrently | Both contend on the shared SID-scoped mutex | One writer performs the operation at a time; abandoned ownership is recovered | Parallel writer test checks valid JSONL and no interleaved records |
 | UTC day boundary arrives while a child emits output | The current dated files remain open until owned children exit | Stop only owned children, close redirected handles, then start against the new UTC-dated files | Isolated child crosses the boundary; verify handles close and service restarts |
 | Cleanup races with event appends | Supervisor and recovery process compete for log maintenance | Both use the same SID-scoped mutex; abandoned ownership is recovered | Parallel writer/cleanup test checks valid JSONL and retention |
+| A child log passes the seven-day age threshold while the child is still running | Its file handle must remain valid; expired inactive files should not wait for the next UTC rollover | Sweep inactive child logs about once a minute, excluding the four currently open child-log filenames | Isolated fixture verifies old inactive files are removed while active filenames and unrelated files remain |
+| An expired child log is temporarily locked or cannot be deleted | One stale file should not stop healthy Personal DC services or prevent other cleanup | Return a per-file diagnostic, emit a warning event, and retry at the next sweep | Isolated failure injection verifies a visible warning and no supervisor/child restart |
 | Disk full or access denied | New record cannot be persisted | Return a visible failure through supervisor/recovery exit status; avoid a silent-success fallback | Isolated filesystem failure confirms nonzero/visible result and no secret leakage |
 | A child emits unusually large output within the week | File size can grow even though its age is bounded | Expire the file after seven days; no byte limit is imposed by this policy | Document as a limitation; disk-volume cap is out of scope |
 | System UTC clock jumps forward or backward | Age-based expiry may remove logs earlier or later than seven elapsed days | Keep the host clock synchronized; expiry follows the system's UTC file timestamps | Clock-jump behavior remains a documented operational limit |

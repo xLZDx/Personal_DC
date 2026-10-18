@@ -95,6 +95,16 @@ function Write-Event([string]$Level, [string]$Event, [hashtable]$Data = @{}) {
     Write-PersonalDCEvent -Directory $LogDirectory -Level $Level -Event $Event -Data $Data
 }
 
+function Invoke-LogExpirationSweep([switch]$IncludeChildStreams, [string[]]$ExcludeFileNames = @()) {
+    $cleanupFailures = @(Invoke-PersonalDCLogCriticalSection {
+        Remove-ExpiredPersonalDCLogs -Directory $LogDirectory -NowUtc ([DateTime]::UtcNow) `
+            -IncludeChildStreams:$IncludeChildStreams -ExcludeFileNames $ExcludeFileNames
+    })
+    if ($cleanupFailures.Count -gt 0) {
+        Write-Event "WARN" "log_expiration_cleanup_incomplete" @{ failures = $cleanupFailures }
+    }
+}
+
 function Redact-Message([string]$Message) {
     if ($env:CONTROL_PLANE_API_KEY) { $Message = $Message.Replace($env:CONTROL_PLANE_API_KEY, "[REDACTED]") }
     $Message = $Message -replace '(?i)(authorization|api[_-]?key|token)(\s*[:=]\s*)[^\s,;]+', '$1$2[REDACTED]'
@@ -212,9 +222,7 @@ try {
     foreach ($port in @(18765, 18080)) {
         if (-not (Test-PortFree $port)) { throw "Required loopback port $port is already in use; refusing to start a duplicate or interfere with another service." }
     }
-    Invoke-PersonalDCLogCriticalSection {
-        Remove-ExpiredPersonalDCLogs -Directory $LogDirectory -NowUtc ([DateTime]::UtcNow) -IncludeChildStreams
-    }
+    Invoke-LogExpirationSweep -IncludeChildStreams
     $JobHandle = [PersonalDC.ProcessJob]::CreateKillOnCloseJob()
 
     $env:PERSONAL_DC_HOME = $Repo
@@ -279,12 +287,23 @@ try {
             if (-not $tunnelReady) { throw "Secure MCP Tunnel did not report live and ready within 45 seconds." }
             Write-Event "INFO" "tunnel_ready" @{ health_endpoint = $TunnelHealthBase; profile = "personal-dc" }
             $healthySince = Get-Date
+            $nextChildLogCleanupUtc = [DateTime]::UtcNow.AddMinutes(1)
 
             while ($true) {
                 Start-Sleep -Seconds 15
                 if ([DateTime]::UtcNow.Date -ne $logDay) {
                     $dailyLogRollover = $true
                     break
+                }
+                if ([DateTime]::UtcNow -ge $nextChildLogCleanupUtc) {
+                    $activeChildLogNames = @(
+                        [IO.Path]::GetFileName($BackendOut),
+                        [IO.Path]::GetFileName($BackendErr),
+                        [IO.Path]::GetFileName($TunnelOut),
+                        [IO.Path]::GetFileName($TunnelErr)
+                    )
+                    Invoke-LogExpirationSweep -IncludeChildStreams -ExcludeFileNames $activeChildLogNames
+                    $nextChildLogCleanupUtc = [DateTime]::UtcNow.AddMinutes(1)
                 }
                 $Backend.Refresh()
                 $Tunnel.Refresh()
@@ -314,9 +333,7 @@ try {
         if (-not $ownedProcessesStopped) {
             throw "An owned Personal DC child did not stop; refusing to start another instance or expire its active log."
         }
-        Invoke-PersonalDCLogCriticalSection {
-            Remove-ExpiredPersonalDCLogs -Directory $LogDirectory -NowUtc ([DateTime]::UtcNow) -IncludeChildStreams
-        }
+        Invoke-LogExpirationSweep -IncludeChildStreams
 
         if ($dailyLogRollover) {
             $FailureCount = 0

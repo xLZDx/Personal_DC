@@ -12,18 +12,42 @@ function Get-PersonalDCLogPath([string]$Directory, [string]$Stream, [datetime]$T
 function Remove-ExpiredPersonalDCLogs(
     [string]$Directory,
     [datetime]$NowUtc = [DateTime]::UtcNow,
-    [switch]$IncludeChildStreams
+    [switch]$IncludeChildStreams,
+    [string[]]$ExcludeFileNames = @()
 ) {
     if (-not (Test-Path -LiteralPath $Directory -PathType Container)) { return }
     $cutoff = $NowUtc.ToUniversalTime().AddDays(-$script:PersonalDCLogRetentionDays)
-    foreach ($file in Get-ChildItem -LiteralPath $Directory -File -ErrorAction Stop) {
+    try {
+        $files = @(Get-ChildItem -LiteralPath $Directory -File -ErrorAction Stop)
+    }
+    catch {
+        return [pscustomobject]@{
+            file = $Directory
+            operation = "enumerate"
+            error_type = $_.Exception.GetType().FullName
+        }
+    }
+
+    $failures = @()
+    foreach ($file in $files) {
+        if ($ExcludeFileNames -contains $file.Name) { continue }
         $matchesEventLog = $file.Name -match '^autostart(-\d{8})?\.log$'
         $matchesChildLog = $IncludeChildStreams -and $file.Name -match '^(backend\.stdout|backend\.stderr|tunnel\.stdout|tunnel\.stderr)(-\d{8})?\.log$'
         if (-not ($matchesEventLog -or $matchesChildLog)) { continue }
         if ($file.LastWriteTimeUtc -lt $cutoff) {
-            Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
+            try {
+                Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
+            }
+            catch {
+                $failures += [pscustomobject]@{
+                    file = $file.Name
+                    operation = "delete"
+                    error_type = $_.Exception.GetType().FullName
+                }
+            }
         }
     }
+    return $failures
 }
 
 function Invoke-PersonalDCLogCriticalSection([scriptblock]$Action) {
@@ -62,13 +86,14 @@ function Write-PersonalDCEvent(
 ) {
     New-Item -ItemType Directory -Force -Path $Directory | Out-Null
     Invoke-PersonalDCLogCriticalSection {
-        Remove-ExpiredPersonalDCLogs -Directory $Directory -NowUtc $Timestamp.ToUniversalTime()
+        $eventCleanupFailures = @(Remove-ExpiredPersonalDCLogs -Directory $Directory -NowUtc $Timestamp.ToUniversalTime())
         $entry = [ordered]@{
             timestamp = $Timestamp.ToString("o")
             level = $Level
             event = $Event
             data = $Data
         }
+        if ($eventCleanupFailures.Count -gt 0) { $entry["cleanup_warnings"] = $eventCleanupFailures }
         $path = Get-PersonalDCLogPath -Directory $Directory -Stream "autostart" -TimestampUtc $Timestamp.ToUniversalTime()
         $line = ($entry | ConvertTo-Json -Compress -Depth 5) + [Environment]::NewLine
         [IO.File]::AppendAllText($path, $line, [Text.UTF8Encoding]::new($false))

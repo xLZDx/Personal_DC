@@ -71,6 +71,55 @@ Describe 'Personal DC seven-day log retention' {
         }
     }
 
+    It 'expires inactive child logs while preserving active exclusions and unrelated files' {
+        $directory = New-RetentionFixture
+        $now = [DateTime]::SpecifyKind([datetime]'2026-10-18T12:00:00', [DateTimeKind]::Utc)
+        $expiredInactiveChild = Join-Path $directory 'backend.stdout-20261001.log'
+        $expiredActiveChild = Join-Path $directory 'tunnel.stderr-20261001.log'
+        $unrelated = Join-Path $directory 'diagnostic.log'
+        try {
+            Set-FixtureLogTime $expiredInactiveChild $now.AddDays(-30)
+            Set-FixtureLogTime $expiredActiveChild $now.AddDays(-30)
+            Set-FixtureLogTime $unrelated $now.AddDays(-30)
+
+            Remove-ExpiredPersonalDCLogs -Directory $directory -NowUtc $now -IncludeChildStreams -ExcludeFileNames @([IO.Path]::GetFileName($expiredActiveChild))
+
+            (Test-Path -LiteralPath $expiredInactiveChild) | Should Be $false
+            (Test-Path -LiteralPath $expiredActiveChild) | Should Be $true
+            (Test-Path -LiteralPath $unrelated) | Should Be $true
+        }
+        finally {
+            Remove-Item -LiteralPath $directory -Recurse -Force
+        }
+    }
+
+    It 'continues deleting other expired files and returns diagnostics when one delete fails' {
+        $directory = New-RetentionFixture
+        $now = [DateTime]::SpecifyKind([datetime]'2026-10-18T12:00:00', [DateTimeKind]::Utc)
+        $blocked = Join-Path $directory 'backend.stdout-20261001.log'
+        $removable = Join-Path $directory 'tunnel.stdout-20261001.log'
+        try {
+            Set-FixtureLogTime $blocked $now.AddDays(-30)
+            Set-FixtureLogTime $removable $now.AddDays(-30)
+
+            Mock Remove-Item {
+                throw [System.UnauthorizedAccessException]::new('fixture delete refusal')
+            } -ParameterFilter { $LiteralPath -eq $blocked }
+
+            $failures = @(Remove-ExpiredPersonalDCLogs -Directory $directory -NowUtc $now -IncludeChildStreams)
+
+            (Test-Path -LiteralPath $blocked) | Should Be $true
+            (Test-Path -LiteralPath $removable) | Should Be $false
+            $failures.Count | Should Be 1
+            $failures[0].file | Should Be ([IO.Path]::GetFileName($blocked))
+            $failures[0].operation | Should Be 'delete'
+            $failures[0].error_type | Should Be 'System.UnauthorizedAccessException'
+        }
+        finally {
+            Remove-Item -LiteralPath $directory -Recurse -Force
+        }
+    }
+
     It 'serializes concurrent event appends into complete, parseable JSONL records' {
         $directory = New-RetentionFixture
         $workerPath = Join-Path $directory 'write-events.ps1'
@@ -128,14 +177,22 @@ for ($index = 0; $index -lt $Count; $index++) {
         )
         $parseErrors.Count | Should Be 0
         $supervisor = Get-Content -LiteralPath $supervisorPath -Raw
+        $sweepWrapperStart = $supervisor.IndexOf('function Invoke-LogExpirationSweep', [StringComparison]::Ordinal)
+        $sweepWrapperEnd = $supervisor.IndexOf('function Redact-Message', $sweepWrapperStart, [StringComparison]::Ordinal)
+        $sweepWrapper = $supervisor.Substring($sweepWrapperStart, $sweepWrapperEnd - $sweepWrapperStart)
         $portGuard = $supervisor.IndexOf('foreach ($port in @(18765, 18080))', [StringComparison]::Ordinal)
-        $startupCleanup = $supervisor.IndexOf('Remove-ExpiredPersonalDCLogs -Directory $LogDirectory -NowUtc ([DateTime]::UtcNow) -IncludeChildStreams', [StringComparison]::Ordinal)
+        $startupCleanup = $supervisor.IndexOf('Invoke-LogExpirationSweep -IncludeChildStreams', [StringComparison]::Ordinal)
         $rolloverCheck = $supervisor.IndexOf('if ([DateTime]::UtcNow.Date -ne $logDay)', [StringComparison]::Ordinal)
         $ownedStop = $supervisor.IndexOf('Stop-OwnedProcess $Tunnel "tunnel-client"', $rolloverCheck, [StringComparison]::Ordinal)
         $backendStop = $supervisor.IndexOf('Stop-OwnedProcess $Backend "personal-dc-backend"', $ownedStop, [StringComparison]::Ordinal)
         $stopFailureGuard = $supervisor.IndexOf('if (-not $ownedProcessesStopped)', $backendStop, [StringComparison]::Ordinal)
-        $postStopCleanup = $supervisor.IndexOf('Remove-ExpiredPersonalDCLogs -Directory $LogDirectory -NowUtc ([DateTime]::UtcNow) -IncludeChildStreams', $startupCleanup + 1, [StringComparison]::Ordinal)
+        $postStopCleanup = $supervisor.IndexOf('Invoke-LogExpirationSweep -IncludeChildStreams', $stopFailureGuard, [StringComparison]::Ordinal)
         $rolloverContinue = $supervisor.IndexOf('if ($dailyLogRollover)', $postStopCleanup, [StringComparison]::Ordinal)
+        $minuteCadence = $supervisor.IndexOf('$nextChildLogCleanupUtc = [DateTime]::UtcNow.AddMinutes(1)', $supervisor.IndexOf('if (-not $tunnelReady)', [StringComparison]::Ordinal), [StringComparison]::Ordinal)
+        $minuteSweepCheck = $supervisor.IndexOf('if ([DateTime]::UtcNow -ge $nextChildLogCleanupUtc)', $minuteCadence, [StringComparison]::Ordinal)
+        $activeNames = $supervisor.IndexOf('$activeChildLogNames = @(', $minuteSweepCheck, [StringComparison]::Ordinal)
+        $excludedSweep = $supervisor.IndexOf('Invoke-LogExpirationSweep -IncludeChildStreams -ExcludeFileNames $activeChildLogNames', $activeNames, [StringComparison]::Ordinal)
+        $cadenceReset = $supervisor.IndexOf('$nextChildLogCleanupUtc = [DateTime]::UtcNow.AddMinutes(1)', $excludedSweep, [StringComparison]::Ordinal)
         $datePathArguments = [regex]::Matches($supervisor, '-TimestampUtc \(\[DateTime\]::UtcNow\)')
 
         ($portGuard -ge 0) | Should Be $true
@@ -147,11 +204,26 @@ for ($index = 0; $index -lt $Count; $index++) {
         ($postStopCleanup -gt $stopFailureGuard) | Should Be $true
         ($postStopCleanup -gt $backendStop) | Should Be $true
         ($rolloverContinue -gt $postStopCleanup) | Should Be $true
+        ($sweepWrapperStart -ge 0) | Should Be $true
+        ($sweepWrapperEnd -gt $sweepWrapperStart) | Should Be $true
+        $sweepWrapper | Should Match 'if \(\$cleanupFailures\.Count -gt 0\)[\s\S]*?Write-Event "WARN" "log_expiration_cleanup_incomplete"'
+        $sweepWrapper | Should Not Match '\bthrow\b'
+        ($minuteCadence -gt 0) | Should Be $true
+        ($minuteSweepCheck -gt $minuteCadence) | Should Be $true
+        ($activeNames -gt $minuteSweepCheck) | Should Be $true
+        ($excludedSweep -gt $activeNames) | Should Be $true
+        ($cadenceReset -gt $excludedSweep) | Should Be $true
         $datePathArguments.Count | Should Be 4
         $supervisor.Substring($stopFailureGuard, $postStopCleanup - $stopFailureGuard) |
             Should Match 'An owned Personal DC child did not stop; refusing to start another instance or expire its active log\.'
         $supervisor.Substring($rolloverCheck, $ownedStop - $rolloverCheck) | Should Match '\$dailyLogRollover\s*=\s*\$true[\s\S]*?break'
         $supervisor.Substring($rolloverContinue, [Math]::Min(300, $supervisor.Length - $rolloverContinue)) |
             Should Match 'daily_log_rollover_complete[\s\S]*?continue'
+        $supervisor.Substring($minuteCadence, $minuteSweepCheck - $minuteCadence) |
+            Should Match 'while \(\$true\)[\s\S]*?Start-Sleep -Seconds 15'
+        $supervisor.Substring($activeNames, $excludedSweep - $activeNames) |
+            Should Match '\$BackendOut[\s\S]*?\$BackendErr[\s\S]*?\$TunnelOut[\s\S]*?\$TunnelErr'
+        $supervisor.Substring($activeNames, $cadenceReset - $activeNames) |
+            Should Match 'Invoke-LogExpirationSweep -IncludeChildStreams -ExcludeFileNames \$activeChildLogNames'
     }
 }
