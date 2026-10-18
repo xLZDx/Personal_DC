@@ -113,18 +113,19 @@ proof of a working MCP service; the supervisor requires a protocol initializatio
 response. Do not stop a process solely because it uses port `21080`; that port is outside Personal
 DC's configured backend and tunnel health ports.
 
-### Separate legacy cloudflared process observed on 2026-10-18
+### Separate ERP test IdP quick tunnel observed on 2026-10-18
 
 The supported Personal DC supervisor owns `tunnel-client.exe` from this repository at health port
 `18080`; its control-plane poll and MCP health were verified. A separate `cloudflared.exe` process
-(PID 34660) uses the same vendored directory but runs `tunnel --no-autoupdate --url
-http://127.0.0.1:21080`. Port 21080 was owned by the ERP supplier-debt runtime's `testbed.idp`, not
-Personal DC. The cloudflared process's recorded parent PID 10628 was no longer present when checked.
-It is therefore outside the supported Personal DC task/tunnel route and appears orphaned from its
-recorded parent. No registered Scheduled Task action or Windows service references this executable
-or port. It may be a stale invocation or a separately launched integration; its intended owner is
-not established. It was left running. Do not stop or reconfigure it until its owner and dependencies
-are identified and the operator authorizes that separate action.
+(PID 34660) uses the same vendored binary but runs `tunnel --no-autoupdate --url
+http://127.0.0.1:21080`. Port 21080 belongs to the ERP supplier-debt runtime's `testbed.idp`, not
+Personal DC. It is intentionally launched by the ERP_MCP real-1C lane: scheduled task
+`ERP_MCP_Lane_Autostart` invokes `D:\ERP_MCP_Testbed\real1c_e2e\autostart\start_lane.ps1`, whose
+documented order includes a Cloudflare quick tunnel for the test IdP and whose implementation
+checks for an existing tunnel to port 21080 before launching another. The task was `Ready` with
+`LastTaskResult=0`; its detached child processes remained running after the launcher exited. The
+process is outside the Personal DC task/tunnel route and must not be stopped as part of Personal DC
+recovery.
 
 ## Isolated supervisor recovery evidence
 

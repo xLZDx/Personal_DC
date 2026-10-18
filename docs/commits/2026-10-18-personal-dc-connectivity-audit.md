@@ -53,17 +53,18 @@ route is reachable for the authorized read-only operations used here.
 ## Port 21080 cloudflared finding
 
 Read-only inspection on 2026-10-18 found cloudflared PID 34660 at
-`D:\Repo\Personal_DC\vendor\tunnel-client\cloudflared.exe`, with safe command arguments
+`D:\Repo\Personal_DC\vendor\tunnel-client\cloudflared.exe`, with command arguments
 `tunnel --no-autoupdate --url http://127.0.0.1:21080`. Port 21080 belonged to PID 21468, whose
-process tree ran `testbed.idp` from `ERP_MCP-supplier-debt-runtime`. The cloudflared process recorded
-parent PID 10628, which was no longer present during inspection. No registered Scheduled Task
-action or Windows service referenced cloudflared or port 21080. The supported Personal DC task uses
-a separate `tunnel-client.exe` process and port 18080.
-
-Conclusion: cloudflared PID 34660 is outside the supported Personal DC MCP route and targets an ERP
-identity-provider origin. It may be a stale or separately launched integration, but its intended
-owner and lifecycle manager are unknown. The process was not stopped or reconfigured. BL-05 tracks
-the owner/dependency gap; no ERP process was touched.
+process tree ran `testbed.idp` from `ERP_MCP-supplier-debt-runtime`. The matching ERP testbed
+launcher was identified at `D:\ERP_MCP_Testbed\real1c_e2e\autostart\start_lane.ps1`. Its header
+describes the ERP real-1C lane and explicitly lists a Cloudflare quick tunnel to the test IdP; lines
+120-129 check for an existing process targeting 21080 and launch this exact command if absent.
+Registered task `ERP_MCP_Lane_Autostart` invokes that script through `wscript.exe`, is described as
+starting/watching the ERP lane, and was `Ready` with `LastTaskResult=0`. The IdP and cloudflared
+children persist after the short launcher exits; the recorded parent PID was therefore absent at
+inspection. The supported Personal DC task separately uses `tunnel-client.exe` PID 5460 on port
+18080. The process is classified as the intentional ERP test IdP tunnel, not a Personal DC tunnel;
+it was left running and no ERP process or task was changed.
 
 ## Limits and rollback
 
@@ -75,6 +76,6 @@ supervisor PID was preserved during installation.
 ## Ownership
 
 The operator is accountable for the delegated Personal DC restoration; Codex performed the audit.
-The service owner for the unrelated ERP IdP and the launcher/owner of cloudflared PID 34660 are not
-identified in available canonical records. The operator is the next assignment path for confirming
-that ownership before any process action.
+The technical owner for cloudflared PID 34660 is the registered `ERP_MCP_Lane_Autostart` task and
+its `start_lane.ps1` launcher. No separate human owner is recorded. The ERP test tunnel is outside
+Personal DC scope, so no process action was needed.
