@@ -29,3 +29,16 @@ enable source disclosure or memory as a workaround.
 The source checkout's frozen benchmark remains read-only. Its expected HEAD is
 `0b4c56d8d0fa7410534b51da77d90999e983ebf6`; the recorded `worker.py` digest is
 `D996B91FFBE7883C70D206D6C5715087C73B2E284F4FCD2C09EFB0E5B9CB6738`.
+
+## Prescribed contract identifiers
+
+Read-only `profile get` calls with the checkout's `src` on `PYTHONPATH` returned all four required
+contracts as `AVAILABLE`. The source hashes identify the full authoritative contract files; they do
+not represent an executed review:
+
+| Kind | Exact ID | Source SHA-256 |
+| --- | --- | --- |
+| Reviewer profile | `reliability-reviewer` | `57897d55145782bfc057131466c91949ef89f8e211ed72af3fa5c295fbab8a00` |
+| Skill | `reliability-contract` | `696bb4cbe8a032369181af70c07a6edbac1a19836fbb6201bd7eef926d80eec8` |
+| Skill | `verification-contract` | `907dde77fc29b0b3109b0858766b9d5c750289a6f53893d28fca23cb105321f9` |
+| Skill | `observability-contract` | `26a848ae3ffa0ca1e913d8fcbf0c67c7dbd88878837a89a9ef8c71923cd5ebe0` |
