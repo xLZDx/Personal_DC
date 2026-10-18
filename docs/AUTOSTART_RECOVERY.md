@@ -80,3 +80,11 @@ The complete disposable run and result remain under:
 ```powershell
 & (Join-Path $PSHOME 'pwsh.exe') -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'D:\Temp\Personal_DC_recovery_E2E_retry_3e33a8d1cd00429b831b6c32a1678b83\run_recovery_e2e.ps1'
 ```
+
+Task Scheduler crash-retry behavior remains `NOT_RUN`. A read-only environment inventory found
+`WindowsSandbox.exe` unavailable and WSL containing only the running `docker-desktop` distribution,
+not a Windows guest. `Get-VM` could not enumerate Hyper-V because the current non-elevated account
+is not authorized. Do not inject failures into the production task. To unblock this final scenario,
+an administrator of host `RAZER` must either grant the operator the required Hyper-V inventory
+permission or perform a read-only VM/checkpoint inventory from an authorized session. Only an
+existing disposable Windows guest should be used for the scheduler test.
