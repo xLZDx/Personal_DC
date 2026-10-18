@@ -34,6 +34,11 @@ Structured, secret-safe startup events are appended to `logs/autostart.log`. Bac
 standard output/error remain in their dedicated log files. The DPAPI key remains in the existing
 per-user store and is not emitted to logs.
 
+These five log streams currently have no retention cap. The proposed bounded-retention design is
+documented in [`LOG_RETENTION_DESIGN.md`](LOG_RETENTION_DESIGN.md). It has not been implemented:
+rotation overwrites old diagnostic files, which requires explicit operator authorization under the
+workspace's deletion safeguard.
+
 ## Install or repair the task
 
 Run from an elevated PowerShell session only if the current account has permission to register the

@@ -2,11 +2,11 @@
 
 ## BL-01 — Bound diagnostic log storage
 
-- **State:** Deferred, non-blocking MINOR reliability finding from the 2026-10-18 autostart recovery review.
+- **State:** Design documented; implementation is blocked pending explicit operator authorization to overwrite expired diagnostic logs.
 - **Finding:** `logs/autostart.log` and the backend/tunnel redirected output files have no rotation or retention limit. Long-running or repeatedly failing sessions can grow them until disk space is constrained.
-- **Evidence:** `scripts/start-autostart.ps1` appends structured supervisor events and redirects child output to persistent log files. Reliability review found no confirmed blocker or major defect; disk exhaustion behavior was not tested.
-- **Recommended action:** Design bounded log rotation/retention that preserves useful incident evidence and does not truncate files still held open by child processes. Validate the policy in an isolated runtime before applying it to the live task.
-- **Owner:** No technical service owner is recorded. The operator remains accountable for the delegated restoration request; Codex can implement the follow-up when scheduled.
+- **Evidence:** `scripts/start-autostart.ps1` appends structured supervisor events and redirects child output to persistent log files; `scripts/recover-autostart.ps1` appends to the same event log once per watchdog tick. A 2026-10-18 read-only snapshot ranged from 0 bytes to 258,371 bytes across the five files. Disk exhaustion behavior has not been tested. Design and failure matrix: [`LOG_RETENTION_DESIGN.md`](LOG_RETENTION_DESIGN.md).
+- **Recommended action:** Obtain operator authorization for the proposed 4 MiB × five generations per stream (100 MiB combined) or another explicit bound. Then implement a shared writer that serializes supervisor/recovery events and drains child output before bounded rotation; test concurrent writes, crash windows, disk full and restart in an isolated runtime. Do not rotate the live files until separately authorized and reviewed.
+- **Owner:** The operator owns the deletion/overwrite decision. Codex is the executor. No separate technical service owner is recorded.
 - **Acceptance:** Maximum retained size/count are explicit; active child log handles are rotated safely; supervisor logging remains diagnosable after rotation; isolated checks cover restart and disk-bound behavior.
 
 ## BL-02 — Resolve Task Scheduler failure-retry behavior
