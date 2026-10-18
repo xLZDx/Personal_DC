@@ -65,6 +65,14 @@ mutex use and the full 24-hour repetition rollover remain `NOT_RUN`; the separat
 `RestartOnFailure` behavior remains unexplained and is not relied upon. The installer does not
 create a tunnel, replace the profile, or regenerate credentials.
 
+The current focused Pester suite passes 16 tests. In addition to scheduler/mutex and readiness
+coverage, it executes the production port preflight with a mocked occupied listener and exercises
+the production runtime-failure catch and redaction path against fixture credentials. An isolated
+E2E copy separately passed clean startup, backend and tunnel recovery after controlled exit, port
+conflict refusal, duplicate-supervisor refusal, and unrelated-process isolation. Exact commands,
+source hashes, logs, and the remaining runtime limits are in
+[`2026-10-18-pdc-regression-coverage.md`](commits/2026-10-18-pdc-regression-coverage.md).
+
 ## Roll back a task registration
 
 Before changing the live task, export its exact XML to
