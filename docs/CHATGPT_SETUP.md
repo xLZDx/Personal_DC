@@ -88,7 +88,7 @@ After the tunnel works interactively:
 %LOCALAPPDATA%\Personal_DC\secrets\runtime-key.dpapi
 ```
 
-The scheduled task `Personal_DC_Tunnel` runs at user logon with limited privileges, starts the stateless MCP backend on `127.0.0.1:18765`, decrypts the key only in the tunnel process environment, and starts `tunnel-client run --profile personal-dc` with health on `127.0.0.1:18080`. It is configured to restart on failure.
+The scheduled task `Personal_DC_V2_Tunnel` runs at user logon with limited privileges and supervises the stateless MCP backend on `127.0.0.1:18765` together with the existing `personal-dc` tunnel profile on health port `127.0.0.1:18080`. The disabled legacy task `Personal_DC_Tunnel` is not used. The supervisor validates MCP protocol readiness, monitors both services, and retries transient failures; Task Scheduler retries a crashed supervisor five times at one-minute intervals. See [AUTOSTART_RECOVERY.md](AUTOSTART_RECOVERY.md) for status checks and rollback.
 
 ## Suggested first prompts
 
