@@ -63,3 +63,20 @@ Check `logs/autostart.log` for `supervisor_fatal`, `supervised_runtime_failure`,
 proof of a working MCP service; the supervisor requires a protocol initialization and `health` tool
 response. Do not stop a process solely because it uses port `21080`; that port is outside Personal
 DC's configured backend and tunnel health ports.
+
+## Isolated supervisor recovery evidence
+
+On 2026-10-18, an E2E owner exercised a disposable copy of the supervisor on loopback ports
+`14941` and `14942`, with synthetic MCP backend/tunnel processes and a synthetic DPAPI key. The run
+passed startup/health, backend failure/restart, fake-tunnel failure/restart, and Job Object cleanup
+(4/4 scenarios). It did not invoke the real tunnel client, use real credentials, contact cloud
+services, register a scheduled task, or modify this checkout. The supervisor copy used nine
+explicit substitutions; this evidence covers orchestration and process ownership with fakes, not
+the real backend/tunnel binaries or Windows Task Scheduler crash-retry behavior.
+
+The complete disposable run and result remain under:
+`D:\Temp\Personal_DC_recovery_E2E_retry_3e33a8d1cd00429b831b6c32a1678b83`.
+
+```powershell
+& (Join-Path $PSHOME 'pwsh.exe') -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'D:\Temp\Personal_DC_recovery_E2E_retry_3e33a8d1cd00429b831b6c32a1678b83\run_recovery_e2e.ps1'
+```
