@@ -2,20 +2,14 @@ param()
 
 $ErrorActionPreference = "Stop"
 $TaskName = "Personal_DC_V2_Tunnel"
-$LogPath = Join-Path (Split-Path -Parent $PSScriptRoot) "logs\autostart.log"
+$LogDirectory = Join-Path (Split-Path -Parent $PSScriptRoot) "logs"
+. (Join-Path $PSScriptRoot "PersonalDCLogRetention.ps1")
 $Mutex = $null
 $MutexHeld = $false
 $ExitCode = 0
 
 function Write-RecoveryEvent([string]$Level, [string]$Event, [hashtable]$Data = @{}) {
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LogPath) | Out-Null
-    $entry = [ordered]@{
-        timestamp = (Get-Date).ToString("o")
-        level = $Level
-        event = $Event
-        data = $Data
-    }
-    Add-Content -LiteralPath $LogPath -Value ($entry | ConvertTo-Json -Compress -Depth 5) -Encoding UTF8
+    Write-PersonalDCEvent -Directory $LogDirectory -Level $Level -Event $Event -Data $Data
 }
 
 try {

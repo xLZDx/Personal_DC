@@ -30,14 +30,14 @@ a full 24-hour rollover has not been observed. See [Microsoft's repetition patte
 This scheduler-state watchdog recovers an exited task; it does not detect a supervisor that remains
 `Running` while hung. Child-service and health failures remain the supervisor's responsibility.
 
-Structured, secret-safe startup events are appended to `logs/autostart.log`. Backend and tunnel
-standard output/error remain in their dedicated log files. The DPAPI key remains in the existing
-per-user store and is not emitted to logs.
-
-These five log streams currently have no retention cap. The proposed bounded-retention design is
-documented in [`LOG_RETENTION_DESIGN.md`](LOG_RETENTION_DESIGN.md). It has not been implemented:
-rotation overwrites old diagnostic files, which requires explicit operator authorization under the
-workspace's deletion safeguard.
+Structured, secret-safe startup events are appended to a UTC-dated `logs/autostart-YYYYMMDD.log`.
+Backend and tunnel standard output/error use the same UTC-day naming convention. Recovery events
+and expiration cleanup share a SID-scoped mutex. Files whose last write is more than seven days old
+are removed, including legacy base-name log files. At the UTC day boundary the supervisor stops
+only its owned backend and tunnel processes, closes their redirected handles, and starts them with
+the new day's files. This introduces a brief daily restart. The policy limits retention age, not
+the total bytes written during the week. See [`LOG_RETENTION_DESIGN.md`](LOG_RETENTION_DESIGN.md)
+for implementation and verification details.
 
 ## Install or repair the task
 
@@ -120,11 +120,13 @@ copy the selected backup over `%APPDATA%\tunnel-client\personal-dc.yaml`, then r
 
 ## Troubleshooting
 
-Check `logs/autostart.log` for `supervisor_fatal`, `supervised_runtime_failure`,
-`backend_ready`, `tunnel_ready`, and `restart_backoff` events. Do not treat a listening TCP port as
-proof of a working MCP service; the supervisor requires a protocol initialization and `health` tool
-response. Do not stop a process solely because it uses port `21080`; that port is outside Personal
-DC's configured backend and tunnel health ports.
+Check the newest `logs/autostart-*.log` for `supervisor_fatal`, `supervised_runtime_failure`,
+`backend_ready`, `tunnel_ready`, and `restart_backoff` events. Backend and tunnel output uses the
+newest corresponding `backend.*-*.log` and `tunnel.*-*.log` files. Daily rollover force-stops only
+owned child processes; an application-buffered final output tail may be lost. Do not treat a
+listening TCP port as proof of a working MCP service; the supervisor requires a protocol
+initialization and `health` tool response. Do not stop a process solely because it uses port
+`21080`; that port is outside Personal DC's configured backend and tunnel health ports.
 
 ### Separate ERP test IdP quick tunnel observed on 2026-10-18
 

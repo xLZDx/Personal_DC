@@ -11,6 +11,7 @@ $ErrorActionPreference = 'Stop'
 
 $installerPath = Join-Path $PSScriptRoot '..\scripts\install-autostart.ps1'
 $recoveryPath = Join-Path $PSScriptRoot '..\scripts\recover-autostart.ps1'
+$retentionPath = Join-Path $PSScriptRoot '..\scripts\PersonalDCLogRetention.ps1'
 $installer = Get-Content -LiteralPath $installerPath -Raw
 $recovery = Get-Content -LiteralPath $recoveryPath -Raw
 
@@ -25,7 +26,6 @@ function Invoke-RecoveryFixture {
     $root = Join-Path ([IO.Path]::GetTempPath()) ("PersonalDC-Recovery-{0}" -f [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $root | Out-Null
     $scriptPath = Join-Path $root 'recovery-fixture.ps1'
-    $logPath = Join-Path $root 'autostart.log'
     $getCountPath = Join-Path $root 'get-count.txt'
     $startCountPath = Join-Path $root 'start-count.txt'
     $stdoutPath = Join-Path $root 'fixture.stdout.log'
@@ -58,9 +58,10 @@ function Start-ScheduledTask {
 }
 "@
     $fixtureSource = $recovery -replace '^\s*param\(\)\s*', ''
+    Copy-Item -LiteralPath $retentionPath -Destination (Join-Path $root 'PersonalDCLogRetention.ps1')
     $fixtureSource = $fixtureSource.Replace(
-        '$LogPath = Join-Path (Split-Path -Parent $PSScriptRoot) "logs\autostart.log"',
-        ('$LogPath = "' + $logPath.Replace('\', '\\').Replace('"', '\"') + '"')
+        '$LogDirectory = Join-Path (Split-Path -Parent $PSScriptRoot) "logs"',
+        ('$LogDirectory = "' + $root.Replace('"', '""') + '"')
     )
     $fixtureSource = $fixtureSource.Replace(
         '$mutexName = "Global\Personal_DC_V2_Tunnel_Recovery_$($userSid.Value)"',
@@ -73,7 +74,8 @@ function Start-ScheduledTask {
         $process = Start-Process -FilePath $powershell `
             -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $scriptPath + '"')) `
             -PassThru -Wait -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-        $log = if (Test-Path -LiteralPath $logPath) { Get-Content -LiteralPath $logPath -Raw } else { '' }
+        $logFiles = @(Get-ChildItem -LiteralPath $root -Filter 'autostart-????????.log' -File -ErrorAction SilentlyContinue)
+        $log = if ($logFiles.Count -gt 0) { ($logFiles | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }) -join "`r`n" } else { '' }
         $getCount = if (Test-Path -LiteralPath $getCountPath) { [int](Get-Content -LiteralPath $getCountPath -Raw) } else { 0 }
         $startCount = if (Test-Path -LiteralPath $startCountPath) { [int](Get-Content -LiteralPath $startCountPath -Raw) } else { 0 }
         $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { '' }

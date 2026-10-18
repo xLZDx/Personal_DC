@@ -1,6 +1,18 @@
 $ErrorActionPreference = 'Stop'
 
 $sourcePath = Join-Path $PSScriptRoot '..\scripts\start-autostart.ps1'
+$retentionHelperPath = Join-Path $PSScriptRoot '..\scripts\PersonalDCLogRetention.ps1'
+. (Resolve-Path -LiteralPath $retentionHelperPath)
+$script:CapturedPersonalDCEvents = @()
+function Write-PersonalDCEvent {
+    param([string]$Directory, [string]$Level, [string]$Event, [hashtable]$Data = @{})
+    $script:CapturedPersonalDCEvents += [pscustomobject]@{
+        Directory = $Directory
+        Level = $Level
+        Event = $Event
+        Data = $Data
+    }
+}
 $tokens = $null
 $parseErrors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -94,7 +106,8 @@ Describe 'Personal DC autostart recovery probes' {
         $script:TunnelCalls = @()
         $script:PortHasListener = $false
         $script:CheckedPorts = @()
-        $script:LogPath = $null
+        $script:LogDirectory = $null
+        $script:CapturedPersonalDCEvents = @()
     }
 
     It 'requires MCP initialize and health tool success, including protocol negotiation' {
@@ -151,7 +164,7 @@ Describe 'Personal DC autostart recovery probes' {
 
         $testRoot = Join-Path ([IO.Path]::GetTempPath()) ("PersonalDC-AuthFailure-{0}" -f [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $testRoot | Out-Null
-        $script:LogPath = Join-Path $testRoot 'autostart.log'
+        $script:LogDirectory = $testRoot
         $previousKey = $env:CONTROL_PLANE_API_KEY
         $env:CONTROL_PLANE_API_KEY = 'fixture-auth-secret'
         $script:FailureCount = 0
@@ -163,16 +176,19 @@ Describe 'Personal DC autostart recovery probes' {
                 Invoke-Expression $script:RuntimeFailureCatchBody
             }
 
-            $log = Get-Content -LiteralPath $script:LogPath -Raw
-            $log | Should Match 'supervised_runtime_failure'
-            $log | Should Match '\[REDACTED\]'
-            $log | Should Not Match 'fixture-auth-secret'
-            $log | Should Not Match 'second-fixture-secret'
+            $script:CapturedPersonalDCEvents.Count | Should Be 1
+            $script:CapturedPersonalDCEvents[0].Directory | Should Be $testRoot
+            $script:CapturedPersonalDCEvents[0].Level | Should Be 'ERROR'
+            $script:CapturedPersonalDCEvents[0].Event | Should Be 'supervised_runtime_failure'
+            $script:CapturedPersonalDCEvents[0].Data.error | Should Match '\[REDACTED\]'
+            $serializedData = ConvertTo-Json -InputObject $script:CapturedPersonalDCEvents[0].Data -Compress
+            $serializedData | Should Not Match 'fixture-auth-secret'
+            $serializedData | Should Not Match 'second-fixture-secret'
         }
         finally {
             $env:CONTROL_PLANE_API_KEY = $previousKey
             Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
-            $script:LogPath = $null
+            $script:LogDirectory = $null
         }
     }
 

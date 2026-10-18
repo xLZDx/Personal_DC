@@ -2,12 +2,12 @@
 
 ## BL-01 — Bound diagnostic log storage
 
-- **State:** Design documented; implementation is blocked pending explicit operator authorization to overwrite expired diagnostic logs.
-- **Finding:** `logs/autostart.log` and the backend/tunnel redirected output files have no rotation or retention limit. Long-running or repeatedly failing sessions can grow them until disk space is constrained.
+- **State:** Seven-day retention implemented and active on 2026-10-18 after focused tests and reviewed live activation. Synthetic-age expiry passed; a full seven-day wall-clock observation has not elapsed.
+- **Finding:** `logs/autostart.log` and the backend/tunnel redirected output files had no expiration policy. Long-running or repeatedly failing sessions could retain old diagnostics indefinitely.
 - **Evidence:** `scripts/start-autostart.ps1` appends structured supervisor events and redirects child output to persistent log files; `scripts/recover-autostart.ps1` appends to the same event log once per watchdog tick. A 2026-10-18 read-only snapshot ranged from 0 bytes to 258,371 bytes across the five files. Disk exhaustion behavior has not been tested. Design and failure matrix: [`LOG_RETENTION_DESIGN.md`](LOG_RETENTION_DESIGN.md).
-- **Recommended action:** Obtain operator authorization for the proposed 4 MiB × five generations per stream (100 MiB combined) or another explicit bound. Then implement a shared writer that serializes supervisor/recovery events and drains child output before bounded rotation; test concurrent writes, crash windows, disk full and restart in an isolated runtime. Do not rotate the live files until separately authorized and reviewed.
-- **Owner:** The operator owns the deletion/overwrite decision. Codex is the executor. No separate technical service owner is recorded.
-- **Acceptance:** Maximum retained size/count are explicit; active child log handles are rotated safely; supervisor logging remains diagnosable after rotation; isolated checks cover restart and disk-bound behavior.
+- **Selected policy:** Keep Personal DC log files for seven days based on last-write time. UTC-dated output files roll at the UTC day boundary; the supervisor restarts only its owned backend and tunnel processes then, so their file handles close before the next day's files are opened. Matching logs older than seven days, including legacy base-name files, are removed. The policy limits age, not bytes written within the week.
+- **Owner:** The operator authorized the seven-day deletion/overwrite policy. Codex is the executor. No separate technical service owner is recorded.
+- **Acceptance:** Event appends and expiration cleanup are serialized; child output uses daily files with a controlled UTC rollover; files older than seven days are expired; focused functional and isolated E2E scenarios passed. A full seven-day wait was not performed. Daily restart can lose application-buffered tail output, system clock jumps affect age-based expiry, and a byte-volume cap is outside the requested scope.
 
 ## BL-02 — Resolve Task Scheduler failure-retry behavior
 

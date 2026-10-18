@@ -80,11 +80,8 @@ namespace PersonalDC {
 $Repo = Split-Path -Parent $PSScriptRoot
 $Client = Join-Path $Repo "vendor\tunnel-client\tunnel-client.exe"
 $SecretPath = Join-Path $env:LOCALAPPDATA "Personal_DC\secrets\runtime-key.dpapi"
-$LogPath = Join-Path $Repo "logs\autostart.log"
-$BackendOut = Join-Path $Repo "logs\backend.stdout.log"
-$BackendErr = Join-Path $Repo "logs\backend.stderr.log"
-$TunnelOut = Join-Path $Repo "logs\tunnel.stdout.log"
-$TunnelErr = Join-Path $Repo "logs\tunnel.stderr.log"
+$LogDirectory = Join-Path $Repo "logs"
+. (Join-Path $PSScriptRoot "PersonalDCLogRetention.ps1")
 $BackendUrl = "http://127.0.0.1:18765/mcp"
 $TunnelHealthBase = "http://127.0.0.1:18080"
 $Mutex = $null
@@ -94,16 +91,8 @@ $Backend = $null
 $Tunnel = $null
 $FailureCount = 0
 
-New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LogPath) | Out-Null
-
 function Write-Event([string]$Level, [string]$Event, [hashtable]$Data = @{}) {
-    $entry = [ordered]@{
-        timestamp = (Get-Date).ToString("o")
-        level = $Level
-        event = $Event
-        data = $Data
-    }
-    Add-Content -LiteralPath $LogPath -Value ($entry | ConvertTo-Json -Compress -Depth 5) -Encoding UTF8
+    Write-PersonalDCEvent -Directory $LogDirectory -Level $Level -Event $Event -Data $Data
 }
 
 function Redact-Message([string]$Message) {
@@ -168,17 +157,24 @@ function Test-TunnelReady {
 }
 
 function Stop-OwnedProcess($Process, [string]$Name) {
-    if (-not $Process) { return }
+    if (-not $Process) { return $true }
     try {
         $Process.Refresh()
         if (-not $Process.HasExited) {
             Stop-Process -Id $Process.Id -Force -ErrorAction Stop
-            $Process.WaitForExit(5000) | Out-Null
+            $exited = $Process.WaitForExit(5000)
+            $Process.Refresh()
+            if (-not $exited -or -not $Process.HasExited) {
+                try { Write-Event "ERROR" "owned_process_stop_timeout" @{ name = $Name; pid = $Process.Id } } catch { }
+                return $false
+            }
             Write-Event "INFO" "owned_process_stopped" @{ name = $Name; pid = $Process.Id }
         }
+        return $true
     }
     catch {
-        Write-Event "ERROR" "owned_process_stop_failed" @{ name = $Name; pid = $Process.Id; error = $_.Exception.Message }
+        try { Write-Event "ERROR" "owned_process_stop_failed" @{ name = $Name; pid = $Process.Id; error = $_.Exception.Message } } catch { }
+        return $false
     }
 }
 
@@ -216,6 +212,9 @@ try {
     foreach ($port in @(18765, 18080)) {
         if (-not (Test-PortFree $port)) { throw "Required loopback port $port is already in use; refusing to start a duplicate or interfere with another service." }
     }
+    Invoke-PersonalDCLogCriticalSection {
+        Remove-ExpiredPersonalDCLogs -Directory $LogDirectory -NowUtc ([DateTime]::UtcNow) -IncludeChildStreams
+    }
     $JobHandle = [PersonalDC.ProcessJob]::CreateKillOnCloseJob()
 
     $env:PERSONAL_DC_HOME = $Repo
@@ -223,11 +222,16 @@ try {
     $env:PERSONAL_DC_PORT = "18765"
 
     while ($true) {
+        $logDay = [DateTime]::UtcNow.Date
+        $dailyLogRollover = $false
+        $ownedProcessesStopped = $true
         $Backend = $null
         $Tunnel = $null
         $env:CONTROL_PLANE_API_KEY = $null
         try {
             Write-Event "INFO" "backend_starting" @{ port = 18765; python = $Python }
+            $BackendOut = Get-PersonalDCLogPath -Directory $LogDirectory -Stream "backend.stdout" -TimestampUtc ([DateTime]::UtcNow)
+            $BackendErr = Get-PersonalDCLogPath -Directory $LogDirectory -Stream "backend.stderr" -TimestampUtc ([DateTime]::UtcNow)
             $Backend = Start-ManagedProcess $Python @("-m", "personal_dc.server") $Repo $BackendOut $BackendErr
 
             $backendDeadline = (Get-Date).AddSeconds(30)
@@ -259,6 +263,8 @@ try {
             }
 
             Write-Event "INFO" "tunnel_starting" @{ profile = "personal-dc"; health_port = 18080 }
+            $TunnelOut = Get-PersonalDCLogPath -Directory $LogDirectory -Stream "tunnel.stdout" -TimestampUtc ([DateTime]::UtcNow)
+            $TunnelErr = Get-PersonalDCLogPath -Directory $LogDirectory -Stream "tunnel.stderr" -TimestampUtc ([DateTime]::UtcNow)
             $Tunnel = Start-ManagedProcess $Client @("run", "--profile", "personal-dc") $Repo $TunnelOut $TunnelErr
             $env:CONTROL_PLANE_API_KEY = $null
 
@@ -276,6 +282,10 @@ try {
 
             while ($true) {
                 Start-Sleep -Seconds 15
+                if ([DateTime]::UtcNow.Date -ne $logDay) {
+                    $dailyLogRollover = $true
+                    break
+                }
                 $Backend.Refresh()
                 $Tunnel.Refresh()
                 if ($Backend.HasExited) { throw "Personal DC backend exited with code $($Backend.ExitCode)." }
@@ -295,10 +305,23 @@ try {
         }
         finally {
             $env:CONTROL_PLANE_API_KEY = $null
-            Stop-OwnedProcess $Tunnel "tunnel-client"
-            Stop-OwnedProcess $Backend "personal-dc-backend"
-            $Tunnel = $null
-            $Backend = $null
+            if (Stop-OwnedProcess $Tunnel "tunnel-client") { $Tunnel = $null }
+            else { $ownedProcessesStopped = $false }
+            if (Stop-OwnedProcess $Backend "personal-dc-backend") { $Backend = $null }
+            else { $ownedProcessesStopped = $false }
+        }
+
+        if (-not $ownedProcessesStopped) {
+            throw "An owned Personal DC child did not stop; refusing to start another instance or expire its active log."
+        }
+        Invoke-PersonalDCLogCriticalSection {
+            Remove-ExpiredPersonalDCLogs -Directory $LogDirectory -NowUtc ([DateTime]::UtcNow) -IncludeChildStreams
+        }
+
+        if ($dailyLogRollover) {
+            $FailureCount = 0
+            Write-Event "INFO" "daily_log_rollover_complete" @{ retention_days = $script:PersonalDCLogRetentionDays }
+            continue
         }
 
         $delay = [Math]::Min(300, [Math]::Pow(2, [Math]::Min($FailureCount, 8)) * 5)
@@ -313,9 +336,17 @@ catch {
 }
 finally {
     $env:CONTROL_PLANE_API_KEY = $null
-    Stop-OwnedProcess $Tunnel "tunnel-client"
-    Stop-OwnedProcess $Backend "personal-dc-backend"
-    if ($MutexHeld -and $Mutex) { $Mutex.ReleaseMutex() }
-    if ($Mutex) { $Mutex.Dispose() }
-    if ($JobHandle -ne [IntPtr]::Zero) { [PersonalDC.ProcessJob]::Close($JobHandle) }
+    try {
+        [void](Stop-OwnedProcess $Tunnel "tunnel-client")
+        [void](Stop-OwnedProcess $Backend "personal-dc-backend")
+    }
+    finally {
+        try {
+            if ($MutexHeld -and $Mutex) { $Mutex.ReleaseMutex() }
+            if ($Mutex) { $Mutex.Dispose() }
+        }
+        finally {
+            if ($JobHandle -ne [IntPtr]::Zero) { [PersonalDC.ProcessJob]::Close($JobHandle) }
+        }
+    }
 }
