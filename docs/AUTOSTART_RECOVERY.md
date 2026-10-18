@@ -113,6 +113,19 @@ proof of a working MCP service; the supervisor requires a protocol initializatio
 response. Do not stop a process solely because it uses port `21080`; that port is outside Personal
 DC's configured backend and tunnel health ports.
 
+### Separate legacy cloudflared process observed on 2026-10-18
+
+The supported Personal DC supervisor owns `tunnel-client.exe` from this repository at health port
+`18080`; its control-plane poll and MCP health were verified. A separate `cloudflared.exe` process
+(PID 34660) uses the same vendored directory but runs `tunnel --no-autoupdate --url
+http://127.0.0.1:21080`. Port 21080 was owned by the ERP supplier-debt runtime's `testbed.idp`, not
+Personal DC. The cloudflared process's recorded parent PID 10628 was no longer present when checked.
+It is therefore outside the supported Personal DC task/tunnel route and appears orphaned from its
+recorded parent. No registered Scheduled Task action or Windows service references this executable
+or port. It may be a stale invocation or a separately launched integration; its intended owner is
+not established. It was left running. Do not stop or reconfigure it until its owner and dependencies
+are identified and the operator authorizes that separate action.
+
 ## Isolated supervisor recovery evidence
 
 On 2026-10-18, an E2E owner exercised a disposable copy of the supervisor on loopback ports
