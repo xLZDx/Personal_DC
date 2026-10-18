@@ -69,7 +69,7 @@ After the tunnel profile is configured, store the runtime key with Windows DPAPI
 .\scripts\status-autostart.ps1
 ```
 
-The encrypted key is stored outside the repository under `%LOCALAPPDATA%\Personal_DC\secrets` and is decryptable only by the current Windows user. The scheduled task `Personal_DC_Tunnel` starts the tunnel automatically at logon and is configured to restart on failure.
+The encrypted key is stored outside the repository under `%LOCALAPPDATA%\Personal_DC\secrets` and is decryptable only by the current Windows user. The scheduled task `Personal_DC_V2_Tunnel` starts the local Streamable HTTP backend and supervises the existing `personal-dc` tunnel profile at logon. It verifies MCP initialization and the `health` tool before connecting the tunnel, checks both services while running, and retries transient failures with a capped delay. Task Scheduler provides five one-minute recovery attempts if the supervisor itself exits. The disabled legacy task `Personal_DC_Tunnel` is not used.
 
 ## Security model
 

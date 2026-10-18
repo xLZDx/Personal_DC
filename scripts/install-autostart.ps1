@@ -2,11 +2,11 @@ param()
 $ErrorActionPreference = "Stop"
 $Repo = Split-Path -Parent $PSScriptRoot
 $StartScript = Join-Path $PSScriptRoot "start-autostart.ps1"
-$TaskName = "Personal_DC_Tunnel"
+$TaskName = "Personal_DC_V2_Tunnel"
 $UserId = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 
 $ActionArgs = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $StartScript + '"'
-$Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $ActionArgs
+$Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $ActionArgs -WorkingDirectory $Repo
 $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $UserId
 $Principal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Limited
 $Settings = New-ScheduledTaskSettingsSet `
@@ -24,7 +24,7 @@ Register-ScheduledTask `
     -Trigger $Trigger `
     -Principal $Principal `
     -Settings $Settings `
-    -Description "Start Personal DC OpenAI Secure MCP Tunnel at Windows logon." `
+    -Description "Supervise Personal DC v2.2 and its existing OpenAI Secure MCP Tunnel profile at Windows logon." `
     -Force | Out-Null
 
 Write-Host "Scheduled task installed: $TaskName" -ForegroundColor Green
