@@ -4,8 +4,13 @@
 
 `Personal_DC_V2_Tunnel` is the supported logon task. Its action must run
 `scripts/start-autostart.ps1` from this checkout as the interactive Windows user that owns the
-DPAPI runtime key. The disabled `Personal_DC_Tunnel` legacy task is separate and is not modified by
-the v2 installer.
+DPAPI runtime key. Both v2 task actions use `conhost.exe --headless` to launch Windows PowerShell
+without a visible console. Keep this wrapper: Windows Terminal can show a window for a scheduled
+PowerShell process even when it receives `-WindowStyle Hidden` ([Microsoft Terminal issue
+12464](https://github.com/microsoft/terminal/issues/12464)). The recovery task's interactive logon
+trigger starts it after the user signs in following a reboot; its daily minute trigger continues to
+recover a supervisor that exits later. The disabled `Personal_DC_Tunnel` legacy task is separate
+and is not modified by the v2 installer.
 
 The PowerShell supervisor owns normal backend and tunnel recovery. It holds a per-session mutex,
 checks the Streamable HTTP `initialize` and `health` tool exchange on `127.0.0.1:18765/mcp`, checks
@@ -54,8 +59,10 @@ Set-Location D:\Repo\Personal_DC
 ```
 
 The installer configures two current-user tasks. `Personal_DC_V2_Tunnel` has no triggers,
-`IgnoreNew`, and the repository's absolute start-script path. `Personal_DC_V2_Tunnel_Recovery` has a
-logon trigger and a daily trigger repeating every minute for one day; its action uses a global
+`IgnoreNew`, and the repository's absolute start-script path. Both tasks launch Windows PowerShell
+through `conhost.exe --headless`, so the Windows Terminal default host cannot expose a console
+window for these hidden background actions. `Personal_DC_V2_Tunnel_Recovery` has a logon trigger
+and a daily trigger repeating every minute for one day; its action uses a global
 mutex and starts the supervisor only when its registered task state is `Ready`. The watchdog does
 not stop a running supervisor. Isolated scheduler scenarios confirmed repeated no-op ticks, natural
 exit recovery in 54.007 seconds, preservation of the active PID during task re-registration, and

@@ -6,9 +6,15 @@ $RecoveryScript = Join-Path $PSScriptRoot "recover-autostart.ps1"
 $TaskName = "Personal_DC_V2_Tunnel"
 $RecoveryTaskName = "Personal_DC_V2_Tunnel_Recovery"
 $UserId = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+$ConsoleHost = Join-Path $env:SystemRoot "System32\conhost.exe"
+$WindowsPowerShell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 
-$ActionArgs = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $StartScript + '"'
-$Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $ActionArgs -WorkingDirectory $Repo
+function New-HiddenPowerShellTaskAction([string]$ScriptPath) {
+    $arguments = '--headless "' + $WindowsPowerShell + '" -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $ScriptPath + '"'
+    New-ScheduledTaskAction -Execute $ConsoleHost -Argument $arguments -WorkingDirectory $Repo
+}
+
+$Action = New-HiddenPowerShellTaskAction $StartScript
 $SupervisorPrincipal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Limited
 $SupervisorSettings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
@@ -17,8 +23,7 @@ $SupervisorSettings = New-ScheduledTaskSettingsSet `
     -DontStopIfGoingOnBatteries `
     -ExecutionTimeLimit ([TimeSpan]::Zero)
 
-$RecoveryActionArgs = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $RecoveryScript + '"'
-$RecoveryAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $RecoveryActionArgs -WorkingDirectory $Repo
+$RecoveryAction = New-HiddenPowerShellTaskAction $RecoveryScript
 $RecoveryLogonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $UserId
 $RecoveryStart = (Get-Date).AddMinutes(1)
 $RecoveryDailyTrigger = New-ScheduledTaskTrigger -Daily -At $RecoveryStart -DaysInterval 1
