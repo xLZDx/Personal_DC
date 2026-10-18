@@ -88,3 +88,8 @@ is not authorized. Do not inject failures into the production task. To unblock t
 an administrator of host `RAZER` must either grant the operator the required Hyper-V inventory
 permission or perform a read-only VM/checkpoint inventory from an authorized session. Only an
 existing disposable Windows guest should be used for the scheduler test.
+
+A read-only query of the live task confirmed `State=Running`, `RestartCount=5`,
+`RestartInterval=PT1M`, `MultipleInstances=IgnoreNew`, and `ExecutionTimeLimit=PT0S`. Its
+`LastTaskResult=267009` is the scheduler's currently-running marker. These settings confirm the
+configured retry policy, not that Scheduler actually restarted the task after a controlled crash.
